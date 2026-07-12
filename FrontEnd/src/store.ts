@@ -1,0 +1,217 @@
+import { create } from 'zustand'
+
+export interface SearchResult {
+  id: string
+  score: number
+  image_path?: string
+  video_id?: string
+  timestamp?: number
+  payload: {
+    video_id: string
+    frame_id: string | number
+    img_link?: string
+    timestamp?: number
+    caption?: string
+    ocr?: string
+    asr?: string
+    objects?: string[]
+    people_count?: number
+    keyframe_id?: string | number
+    [key: string]: unknown
+  }
+}
+
+export interface RecheckItem {
+  id: string
+  img_link: string
+  payload: SearchResult['payload']
+  addedAt: number
+  answerType: 'KIS' | 'QA' | 'TRAKE' | 'AUTO'
+  answer?: string
+}
+
+export interface SearchHistoryItem {
+  query: string
+  mode: string
+  language: string
+  top_k: number
+  collection: string | null
+  model_id: string | null
+  results: SearchResult[]
+  timestamp: number
+}
+
+export interface Toast {
+  id: string
+  message: string
+  type?: 'success' | 'error' | 'info'
+}
+
+interface AppState {
+  currentDataset: string | null
+  currentModel: string | null
+  searchResults: SearchResult[]
+  recheckList: RecheckItem[]
+  searchHistory: SearchHistoryItem[]
+  toasts: Toast[]
+
+  columns: number
+  topK: number
+  language: string
+  mode: string
+  lastSearch: {
+    query: string
+    collection: string
+    model_id: string
+    top_k: number
+    mode?: string
+    language?: string
+  } | null
+  previewResult: SearchResult | null
+  playingVideo: SearchResult | null
+
+  isLoading: boolean
+  error: string | null
+  displayMode: 'fast' | 'full'
+
+  setDataset: (dataset: string) => void
+  setModel: (model: string) => void
+  setSearchResults: (results: SearchResult[]) => void
+  setRecheckList: (list: RecheckItem[]) => void
+  addToSearchHistory: (item: SearchHistoryItem) => void
+  removeSearchHistory: (index: number) => void
+  clearSearchHistory: () => void
+
+  setColumns: (cols: number) => void
+  setTopK: (k: number) => void
+  setLanguage: (lang: string) => void
+  setMode: (mode: string) => void
+  setLastSearch: (lastSearch: AppState['lastSearch']) => void
+  setPreviewResult: (res: SearchResult | null) => void
+  setPlayingVideo: (video: SearchResult | null) => void
+  setIsLoading: (loading: boolean) => void
+  setError: (err: string | null) => void
+  setDisplayMode: (mode: 'fast' | 'full') => void
+
+  addToRecheckList: (item: Omit<RecheckItem, 'addedAt'>) => void
+  removeFromRecheckList: (id: string) => void
+  clearRecheckList: () => void
+  moveRecheckItem: (id: string, direction: 'up' | 'down') => void
+  updateRecheckItemAnswer: (id: string, answer: string) => void
+
+  addToast: (message: string, type?: 'success' | 'error' | 'info') => void
+  removeToast: (id: string) => void
+}
+
+const loadHistory = (): SearchHistoryItem[] => {
+  try {
+    const data = localStorage.getItem('aic_history')
+    return data ? JSON.parse(data) : []
+  } catch {
+    return []
+  }
+}
+
+export const useStore = create<AppState>((set) => ({
+  currentDataset: 'AIC2026_SIGLIP',
+  currentModel: 'siglip-so400m',
+  searchResults: [],
+  recheckList: [],
+  searchHistory: loadHistory(),
+  toasts: [],
+
+  columns: 4,
+  topK: 100,
+  language: 'AUTO',
+  mode: 'AUTO',
+  lastSearch: null,
+  previewResult: null,
+  playingVideo: null,
+
+  isLoading: false,
+  error: null,
+  displayMode: 'fast',
+
+  setDataset: (dataset) => set({ currentDataset: dataset }),
+  setModel: (model) => set({ currentModel: model }),
+  setSearchResults: (results) => set({ searchResults: results }),
+  setRecheckList: (list) => set({ recheckList: list }),
+
+  addToSearchHistory: (item) => set((state) => {
+    if (state.searchHistory.length > 0 && state.searchHistory[0].query === item.query && state.searchHistory[0].mode === item.mode) {
+      return state
+    }
+    const newHistory = [item, ...state.searchHistory].slice(0, 20)
+    localStorage.setItem('aic_history', JSON.stringify(newHistory))
+    return { searchHistory: newHistory }
+  }),
+
+  removeSearchHistory: (index) => set((state) => {
+    const newHistory = [...state.searchHistory]
+    newHistory.splice(index, 1)
+    localStorage.setItem('aic_history', JSON.stringify(newHistory))
+    return { searchHistory: newHistory }
+  }),
+
+  clearSearchHistory: () => {
+    localStorage.removeItem('aic_history')
+    set({ searchHistory: [] })
+  },
+
+  setColumns: (cols) => set({ columns: cols }),
+  setTopK: (k) => set({ topK: k }),
+  setLanguage: (lang) => set({ language: lang }),
+  setMode: (mode) => set({ mode }),
+  setLastSearch: (lastSearch) => set({ lastSearch }),
+  setPreviewResult: (res) => set({ previewResult: res }),
+  setPlayingVideo: (video) => set({ playingVideo: video }),
+  setIsLoading: (loading) => set({ isLoading: loading }),
+  setError: (err) => set({ error: err }),
+  setDisplayMode: (displayMode) => set({ displayMode }),
+
+  addToRecheckList: (item) => set((state) => {
+    if (state.recheckList.length >= 100) return state
+    if (state.recheckList.some((x) => x.id === item.id)) return state
+    return {
+      recheckList: [...state.recheckList, { ...item, addedAt: Date.now() }]
+    }
+  }),
+
+  removeFromRecheckList: (id) => set((state) => ({
+    recheckList: state.recheckList.filter(item => item.id !== id)
+  })),
+
+  clearRecheckList: () => set({ recheckList: [] }),
+
+  updateRecheckItemAnswer: (id, answer) => set((state) => ({
+    recheckList: state.recheckList.map(item => item.id === id ? { ...item, answer } : item)
+  })),
+
+  moveRecheckItem: (id, direction) => set((state) => {
+    const idx = state.recheckList.findIndex(item => item.id === id)
+    if (idx < 0) return state
+    if (direction === 'up' && idx > 0) {
+      const newList = [...state.recheckList]
+      ;[newList[idx - 1], newList[idx]] = [newList[idx], newList[idx - 1]]
+      return { recheckList: newList }
+    }
+    if (direction === 'down' && idx < state.recheckList.length - 1) {
+      const newList = [...state.recheckList]
+      ;[newList[idx + 1], newList[idx]] = [newList[idx], newList[idx + 1]]
+      return { recheckList: newList }
+    }
+    return state
+  }),
+
+  addToast: (message, type = 'info') => {
+    const id = Math.random().toString(36).slice(2, 11)
+    set((state) => ({ toasts: [...state.toasts, { id, message, type }] }))
+    setTimeout(() => {
+      set((state) => ({ toasts: state.toasts.filter(t => t.id !== id) }))
+    }, 3000)
+  },
+
+  removeToast: (id) => set((state) => ({
+    toasts: state.toasts.filter(t => t.id !== id)
+  }))
+}))
