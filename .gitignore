@@ -1,3 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python virtual environment
+.venv/
+venv/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.vite/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# AI model weights
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# AI model weights stored at project root
+models/
+weights/
+
+# Dataset / multimedia stored at project root
+data/
+datasets/
+videos/
+vids/
+kfs/
+frames/
+thumbnails/
+
+# Vector databases / cache stored at project root
+qdrant_storage/
+milvus_data/
+redis_data/
+
+# Temporary directories stored at project root
+tmp/
+temp/
+cache/
+# Existing team data
 /lab/collections/*
 /lab/additional_data/*/*
-__pycache__
