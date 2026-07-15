@@ -42,7 +42,7 @@ models/
 weights/
 
 # Dataset / multimedia stored at project root
-data/
+/data/
 datasets/
 videos/
 vids/
