@@ -228,17 +228,6 @@ export default function SearchPanel() {
           </select>
         </div>
 
-        <div>
-          <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Model</label>
-          <select
-            value={currentModel || 'siglip-so400m'}
-            onChange={(e) => setModel(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500"
-          >
-            <option value="siglip-so400m">SigLIP SO400M</option>
-            <option value="clip-vit-b-32">CLIP ViT-B/32</option>
-          </select>
-        </div>
 
         <button
           onClick={() => setShowAdvanced((v) => !v)}
