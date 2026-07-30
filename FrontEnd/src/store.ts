@@ -97,6 +97,7 @@ interface AppState {
   removeFromRecheckList: (id: string) => void
   clearRecheckList: () => void
   moveRecheckItem: (id: string, direction: 'up' | 'down') => void
+  reorderRecheckItem: (fromIdx: number, toIdx: number) => void
   updateRecheckItemAnswer: (id: string, answer: string) => void
 
   addToast: (message: string, type?: 'success' | 'error' | 'info') => void
@@ -201,6 +202,18 @@ export const useStore = create<AppState>((set) => ({
       return { recheckList: newList }
     }
     return state
+  }),
+
+  reorderRecheckItem: (fromIdx, toIdx) => set((state) => {
+    if (fromIdx < 0 || fromIdx >= state.recheckList.length) return state
+    if (toIdx < 0 || toIdx >= state.recheckList.length) return state
+    if (fromIdx === toIdx) return state
+    
+    const newList = [...state.recheckList]
+    const [moved] = newList.splice(fromIdx, 1)
+    newList.splice(toIdx, 0, moved)
+    
+    return { recheckList: newList }
   }),
 
   addToast: (message, type = 'info') => {
