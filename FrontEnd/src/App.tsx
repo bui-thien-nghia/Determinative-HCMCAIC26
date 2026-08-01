@@ -4,6 +4,7 @@ import RecheckPanel from './components/RecheckPanel'
 import PreviewModal from './components/PreviewModal'
 import VideoModal from './components/VideoModal'
 import { useStore } from './store'
+import SystemStatus from './components/SystemStatus'
 import { LayoutGrid, X } from 'lucide-react'
 
 function App() {
@@ -11,22 +12,25 @@ function App() {
 
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex flex-col overflow-hidden font-sans select-none relative">
-      <div className="fixed top-4 right-4 z-100 flex flex-col gap-2 pointer-events-none">
+      <div className="fixed bottom-4 right-4 z-1500 flex flex-col-reverse gap-2 pointer-events-none" style={{ maxWidth: 340 }}>
         {toasts.map(toast => (
           <div
             key={toast.id}
-            className={`pointer-events-auto flex items-center justify-between min-w-[200px] p-3 rounded shadow-lg border text-sm font-medium transition-all ${
-              toast.type === 'error' ? 'bg-red-900/90 border-red-700 text-red-100' :
-              toast.type === 'success' ? 'bg-green-900/90 border-green-700 text-green-100' :
-              'bg-slate-800/90 border-slate-700 text-slate-100'
+            className={`pointer-events-auto flex items-center gap-2 px-3 py-2 rounded-md shadow-lg border text-xs font-medium transition-all ${
+              toast.type === 'error' ? 'bg-red-900/90 border-red-700/80 text-red-100' :
+              toast.type === 'success' ? 'bg-slate-800/95 border-slate-700 text-slate-100' :
+              'bg-slate-800/95 border-slate-700 text-slate-300'
             }`}
           >
-            <span>{toast.message}</span>
+            {toast.type === 'success' && <span className="text-emerald-400 shrink-0">✓</span>}
+            {toast.type === 'error' && <span className="text-red-400 shrink-0">✕</span>}
+            {toast.type === 'info' && <span className="text-blue-400 shrink-0">·</span>}
+            <span className="flex-1">{toast.message}</span>
             <button
               onClick={() => removeToast(toast.id)}
-              className="ml-4 opacity-70 hover:opacity-100"
+              className="ml-1 opacity-50 hover:opacity-100 shrink-0"
             >
-              <X size={14} />
+              <X size={12} />
             </button>
           </div>
         ))}
@@ -60,7 +64,8 @@ function App() {
           </div>
 
           <div className="flex items-center gap-1.5">
-            <div className="flex items-center bg-slate-800 rounded-md border border-slate-700 overflow-hidden">
+            <SystemStatus />
+            <div className="flex items-center bg-slate-800 rounded-md border border-slate-700 overflow-hidden ml-2">
               <div className="relative group/fast">
                 <button
                   onClick={() => setDisplayMode('fast')}
@@ -97,7 +102,7 @@ function App() {
                 i
               </button>
               <div
-                className="pointer-events-none fixed top-[64px] right-4 rounded-lg bg-slate-950 border border-slate-700 text-slate-300 text-[10px] leading-relaxed shadow-2xl opacity-0 group-hover/modeinfo:opacity-100 transition-opacity duration-150 z-200 overflow-hidden"
+                className="pointer-events-none fixed top-16 right-4 rounded-lg bg-slate-950 border border-slate-700 text-slate-300 text-[10px] leading-relaxed shadow-2xl opacity-0 group-hover/modeinfo:opacity-100 transition-opacity duration-150 z-50 overflow-hidden"
                 style={{ maxWidth: 'min(640px, calc(100vw - 2rem)', wordBreak: 'break-word' }}
               >
                 <div className="grid grid-cols-2 divide-x divide-slate-700">
@@ -125,7 +130,7 @@ function App() {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        <aside className="w-[300px] shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col z-10">
+        <aside className="w-75 shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col z-10">
           <SearchPanel />
         </aside>
 
@@ -133,7 +138,7 @@ function App() {
           <ResultGrid />
         </main>
 
-        <aside className="w-[340px] shrink-0 border-l border-slate-800 bg-slate-900 flex flex-col z-10">
+        <aside className="w-85 shrink-0 border-l border-slate-800 bg-slate-900 flex flex-col z-10">
           <RecheckPanel />
         </aside>
       </div>

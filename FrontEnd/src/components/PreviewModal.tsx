@@ -28,7 +28,7 @@ export default function PreviewModal() {
         id: previewResult.id || `${previewResult.payload?.video_id}_${previewResult.payload?.frame_id}_${Date.now()}`,
         img_link: previewResult.payload.img_link || previewResult.image_path || '',
         payload: previewResult.payload,
-        answerType: (useStore.getState().mode === 'AUTO' ? 'KIS' : useStore.getState().mode) as any
+        answerType: useStore.getState().mode as any
       }
 
       const { api } = await import('../api')
