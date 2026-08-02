@@ -214,8 +214,23 @@ class TranscriptFeatureProcessor:
         return tran_map
 
 
-    def extract_transcription_features(self, tran_texts: list, batch_size: int = 32):
-        return self.feature_extraction_model.run(tran_texts, batch_size)
+    def extract_transcription_features(
+        self,
+        tran_texts: list,
+        batch_size: int = 32,
+        return_dense: bool = False,
+        return_sparse: bool = True,
+        return_multi: bool = False,
+    ):
+        return [
+            feat_type if feat_type is not None else [[] for _ in range(len(tran_texts))]
+            for feat_type in self.feature_extraction_model.run(
+            tran_texts,
+            batch_size,
+            return_dense=return_dense,
+            return_sparse=return_sparse,
+            return_multi=return_multi
+        )]
 
 
     def save_transcripts_and_features(self, tran_map: dict, feats: list):
@@ -268,7 +283,10 @@ class TranscriptFeatureProcessor:
             )
             feats = self.extract_transcription_features(
                 list(tran_map.values()),
-                batch_size=feature_extraction_batch_size
+                batch_size=feature_extraction_batch_size,
+                return_dense=True,
+                return_sparse=True,
+                return_multi=False
             )
             self.save_transcripts_and_features(tran_map, feats)
 

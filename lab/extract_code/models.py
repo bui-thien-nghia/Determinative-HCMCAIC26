@@ -1,6 +1,9 @@
 import torch
 import torch.nn.functional as F
 import cv2
+import os
+import sys
+from contextlib import contextmanager
 from PIL import Image
 
 # Standardized frame
@@ -20,7 +23,7 @@ class ExtractionModel:
 
     
     def run(self, input, batch_size):
-        pass
+        raise NotImplementedError("The function is called from a placeholder class")
 
 # SigLIP2
 from transformers import AutoModel, AutoProcessor
@@ -122,7 +125,7 @@ class FasterWhisperModel(ExtractionModel):
     def load(self):
         super().load()
         if self.device == "default": self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = WhisperModel(self.name, self.device, compute_type="int8_float16" if self.quantized else "default").eval()
+        self.model = WhisperModel(self.name, self.device, compute_type="int8_float16" if self.quantized else "default")
         self.model = BatchedInferencePipeline(self.model)
 
 
@@ -163,7 +166,7 @@ class BGEM3Model(ExtractionModel):
         super().__init__(name, device, quantized, attention_implementation)
         
     
-    def load(self, return_dense=False, return_sparse=True, return_colbert=False):
+    def load(self, return_dense=True, return_sparse=True, return_colbert=False):
         super().load()
         if self.device == "default": self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = BGEM3FlagModel(
@@ -178,13 +181,24 @@ class BGEM3Model(ExtractionModel):
         )
 
 
-    def run(self, txts: list[str], batch_size: int = 32):
+    def run(
+        self,
+        txts: list[str],
+        batch_size: int = 32,
+        return_dense: bool = True,
+        return_sparse: bool = True,
+        return_multi: bool = False,
+    ):
         if not self.model:
             print(f"[ERROR] Cannot run inference on {self.name}: the model is missing")
             return None
         feat_dicts = self.model.encode(
             txts,
-            batch_size=batch_size
+            batch_size=batch_size,
+            return_dense=return_dense,
+            return_sparse=return_sparse,
+            return_colbert_vecs=return_multi,
+            show_progress_bar=False
         )
         return feat_dicts["dense_vecs"], feat_dicts["lexical_weights"], feat_dicts["colbert_vecs"]
 
