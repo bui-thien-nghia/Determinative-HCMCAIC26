@@ -1,9 +1,7 @@
 import torch
 import torch.nn.functional as F
 import cv2
-import os
-import sys
-from contextlib import contextmanager
+from tqdm import tqdm
 from PIL import Image
 
 # Standardized frame
@@ -198,14 +196,45 @@ class BGEM3Model(ExtractionModel):
             return_dense=return_dense,
             return_sparse=return_sparse,
             return_colbert_vecs=return_multi,
-            show_progress_bar=False
         )
         return feat_dicts["dense_vecs"], feat_dicts["lexical_weights"], feat_dicts["colbert_vecs"]
 
-
+# BEiT3
 class BEiT3Model(ExtractionModel):
     def __init__(self, name, device="default", quantized=True, attention_implementation=None):
         super().__init__(name, device, quantized, attention_implementation)
+        
+    
+    def load(self):
+        super().load()
+        self.model = AutoModel.from_pretrained(
+            self.name,
+            device_map="auto",
+            dtype=torch.bfloat16 if self.quantized else torch.float32,
+            attn_implementation=self.attention_implementation
+        ).eval()
+        if self.device != "default":
+            self.model = self.model.to(self.device)
+        self.device = str(self.model.device)
+        self.processor = AutoProcessor.from_pretrained(self.name)
+
+
+    def run(self, imgs: list[Image.Image], batch_size: int = 32):
+        if not self.model or not self.processor:
+            print(f"[ERROR] Cannot run inference on {self.name}: either the model or the processor is missing")
+            return None
+        feats = []
+        for i in range(0, len(imgs), batch_size):
+            j = len(imgs) if i + batch_size > len(imgs) else i + batch_size
+            batch = imgs[i:j]
+            preprocs = self.processor(images=batch, return_tensors='pt')
+            
+            with torch.no_grad():
+                feat = self.model(**preprocs.to(self.device)).pooler_output
+                feat = F.normalize(feat)
+
+            feats.append(feat.cpu())
+        return torch.vstack(feats).float().numpy()
 
 
 class RTDETRModel(ExtractionModel):

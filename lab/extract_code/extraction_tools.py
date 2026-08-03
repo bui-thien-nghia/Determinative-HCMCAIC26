@@ -1,9 +1,8 @@
-import os
 import csv
 import numpy as np
 from tqdm import tqdm
-from glob import glob
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -19,9 +18,10 @@ class KeyframeAndFeatureExtractor:
     ):
         self.shot_extraction_model = shot_extraction_model
         self.feature_extraction_model = feature_extraction_model
-        self.img_dir = os.path.join(save_dir, "imgs")
-        self.map_dir = os.path.join(save_dir, "maps")
-        self.feat_dir = os.path.join(save_dir, "feats", "siglip2_dense")
+        self.save_dir = Path(save_dir)
+        self.img_dir = self.save_dir / "imgs"
+        self.map_dir = self.save_dir / "maps"
+        self.feat_dir = self.save_dir / "feats" / "siglip2_dense"
 
         self.shot_extraction_model.load()
         self.feature_extraction_model.load()
@@ -82,18 +82,18 @@ class KeyframeAndFeatureExtractor:
         header = []
         vid_id = ""
         for idx, (img, map, feat) in enumerate(zip(imgs, maps, feats)):
-            vid_id = map["vid_path"].split('\\')[-1].split('.')[0]
+            vid_id = Path(map["vid_path"]).stem
             frame_id = f"{(idx + 1):03d}"
-            os.makedirs(os.path.join(self.img_dir, vid_id), exist_ok=True)
-            os.makedirs(os.path.join(self.feat_dir, vid_id), exist_ok=True)
+            (self.img_dir / vid_id).mkdir(parents=True, exist_ok=True)
+            (self.feat_dir / vid_id).mkdir(parents=True, exist_ok=True)
 
-            img.save(os.path.join(self.img_dir, vid_id, f"{frame_id}.jpg"))
-            np.save(os.path.join(self.feat_dir, vid_id, f"{frame_id}.npy"), feat)
+            img.save(self.img_dir / vid_id / f"{frame_id}.jpg")
+            np.save(self.feat_dir / vid_id / f"{frame_id}.npy", feat)
             map.pop("vid_path", None)
             header = list(map.keys())
             csv_list.append(list(map.values()))
 
-        with open(os.path.join(self.map_dir, f"{vid_id}.csv"), 'w', newline="", encoding="utf-8") as f:
+        with open(self.map_dir / f"{vid_id}.csv", 'w', newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(header)
             writer.writerows(csv_list)
@@ -107,9 +107,9 @@ class KeyframeAndFeatureExtractor:
         clustering_similarity_threshold: float = 0.85,
         max_workers: int = 1
     ):
-        os.makedirs(self.img_dir, exist_ok=True)
-        os.makedirs(self.map_dir, exist_ok=True)
-        os.makedirs(self.feat_dir, exist_ok=True)
+        self.img_dir.mkdir(parents=True, exist_ok=True)
+        self.map_dir.mkdir(parents=True, exist_ok=True)
+        self.feat_dir.mkdir(parents=True, exist_ok=True)
 
         def process_single_video(path):
             imgs, maps, feats = self.extract_keyframes_and_features(
@@ -140,10 +140,11 @@ class TranscriptFeatureProcessor:
     ):
         self.transcription_model = transcription_model
         self.feature_extraction_model = feature_extraction_model
-        self.tran_dir = os.path.join(save_dir, "trans")
-        self.feat_dir_dense = os.path.join(save_dir, "feats", "bgem3_dense")
-        self.feat_dir_sparse_token_ids = os.path.join(save_dir, "feats", "bgem3_sparse", "token_ids")
-        self.feat_dir_sparse_weights = os.path.join(save_dir, "feats", "bgem3_sparse", "weights")
+        self.save_dir = Path(save_dir)
+        self.tran_dir = self.save_dir / "trans"
+        self.feat_dir_dense = self.save_dir / "feats" / "bgem3_dense"
+        self.feat_dir_sparse_token_ids = self.save_dir / "feats" / "bgem3_sparse" / "token_ids"
+        self.feat_dir_sparse_weights = self.save_dir / "feats" / "bgem3_sparse" / "weights"
 
         self.transcription_model.load()
         self.feature_extraction_model.load()
@@ -190,10 +191,9 @@ class TranscriptFeatureProcessor:
         max_time_distance: float = 5.0
     ):
         tran_map: dict = {}
-        vid_id = img_map_path.split('\\')[-1].split('.')[0]
+        vid_id = Path(img_map_path).stem
         with open(img_map_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            next(reader)
 
             for idx, row in enumerate(reader):
                 time_order = float(row["time_order"])
@@ -237,19 +237,19 @@ class TranscriptFeatureProcessor:
         vid_id = ""
         for code, tran, feat_dense, feat_sparse, _ in zip(tran_map.keys(), tran_map.values(), *feats):
             vid_id, frame_id = code.rsplit('_', 1)
-            os.makedirs(os.path.join(self.tran_dir, vid_id), exist_ok=True)
-            os.makedirs(os.path.join(self.feat_dir_dense, vid_id), exist_ok=True)
-            os.makedirs(os.path.join(self.feat_dir_sparse_token_ids, vid_id), exist_ok=True)
-            os.makedirs(os.path.join(self.feat_dir_sparse_weights, vid_id), exist_ok=True)
+            (self.tran_dir / vid_id).mkdir(parents=True, exist_ok=True)
+            (self.feat_dir_dense / vid_id).mkdir(parents=True, exist_ok=True)
+            (self.feat_dir_sparse_token_ids / vid_id).mkdir(parents=True, exist_ok=True)
+            (self.feat_dir_sparse_weights / vid_id).mkdir(parents=True, exist_ok=True)
 
             feat_sparse_token_ids = np.array(list(feat_sparse.keys()), dtype=np.int32)
             feat_sparse_weights = np.array(list(feat_sparse.values()), dtype=np.float32)
 
-            with open(os.path.join(self.tran_dir, vid_id, f"{frame_id}.txt"), 'w', encoding="utf-8") as f:
+            with open(self.tran_dir / vid_id / f"{frame_id}.txt", 'w', encoding="utf-8") as f:
                 f.write(tran)
-            np.save(os.path.join(self.feat_dir_dense, vid_id, f"{frame_id}.npy"), feat_dense)
-            np.save(os.path.join(self.feat_dir_sparse_token_ids, vid_id, f"{frame_id}.npy"), feat_sparse_token_ids)
-            np.save(os.path.join(self.feat_dir_sparse_weights, vid_id, f"{frame_id}.npy"), feat_sparse_weights)
+            np.save(self.feat_dir_dense / vid_id / f"{frame_id}.npy", feat_dense)
+            np.save(self.feat_dir_sparse_token_ids / vid_id / f"{frame_id}.npy", feat_sparse_token_ids)
+            np.save(self.feat_dir_sparse_weights / vid_id / f"{frame_id}.npy", feat_sparse_weights)
 
 
     def extract_and_save_transcript(self,
@@ -263,10 +263,10 @@ class TranscriptFeatureProcessor:
         feature_extraction_batch_size: int = 32,
         max_workers: int = 1
     ):
-        os.makedirs(self.tran_dir, exist_ok=True)
-        os.makedirs(self.feat_dir_dense, exist_ok=True)
-        os.makedirs(self.feat_dir_sparse_token_ids, exist_ok=True)
-        os.makedirs(self.feat_dir_sparse_weights, exist_ok=True)
+        self.tran_dir.mkdir(parents=True, exist_ok=True)
+        self.feat_dir_dense.mkdir(parents=True, exist_ok=True)
+        self.feat_dir_sparse_token_ids.mkdir(parents=True, exist_ok=True)
+        self.feat_dir_sparse_weights.mkdir(parents=True, exist_ok=True)
 
         def process_single_video(vid: str, map: str):
             tran_segments = self.transcribe_and_segment_transcript(
