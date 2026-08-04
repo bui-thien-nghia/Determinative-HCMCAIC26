@@ -45,28 +45,34 @@ class DataLoader:
             )
         )
 
-        self.vid_paths = [str(path) for path in self.dataset_dir.rglob("vids/**/*.mp4")] # Videos
-        self.map_paths = [str(path) for path in self.dataset_dir.rglob("maps/**/*.csv")] # Keyframe maps on videos
-        self.met_paths = [str(path) for path in self.dataset_dir.rglob("mets/**/*.json")] # Metadata
+        self.vid_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("vids/**/*.mp4")} # Videos
+        # self.map_paths = [str(path) for path in self.dataset_dir.rglob("maps/**/*.csv")] # Keyframe maps on videos
+        # self.met_paths = [str(path) for path in self.dataset_dir.rglob("mets/**/*.json")] # Metadata
         self.img_paths = [str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")] # Keyframes
-        self.tran_paths = [str(path) for path in self.dataset_dir.rglob("trans/**/*.txt")] # Transcriptions
-        self.feat_siglip2_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/siglip2_dense/**/*.npy")]
-        self.feat_beit3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/beit3_dense/**/*.npy")]
-        self.feat_bgem3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_dense/**/*.npy")]
-        self.feat_bgem3_sparse_token_id_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/token_ids/**/*.npy")]
-        self.feat_bgem3_sparse_weight_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/weights/**/*.npy")]
+        # self.tran_paths = [str(path) for path in self.dataset_dir.rglob("trans/**/*.txt")] # Transcriptions
+        # self.feat_siglip2_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/siglip2_dense/**/*.npy")]
+        # self.feat_beit3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/beit3_dense/**/*.npy")]
+        # self.feat_bgem3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_dense/**/*.npy")]
+        # self.feat_bgem3_sparse_token_id_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/token_ids/**/*.npy")]
+        # self.feat_bgem3_sparse_weight_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/weights/**/*.npy")]
+
+
+#         print(f"""Dataset record:
+# {len(self.vid_paths)} videos
+# {len(self.map_paths)} keyframe maps
+# {len(self.met_paths)} metadata files
+# {len(self.img_paths)} keyframes
+# {len(self.tran_paths)} transcription chunks
+# {len(self.feat_siglip2_dense_paths)} SigLIP2 dense features
+# {len(self.feat_beit3_dense_paths)} BeIT3 dense features
+# {len(self.feat_bgem3_dense_paths)} BGE M3 dense features
+# {len(self.feat_bgem3_sparse_token_id_paths)} BGE M3 sparse token ids
+# {len(self.feat_bgem3_sparse_weight_paths)} BGE M3 sparse weights
+# """)
 
         print(f"""Dataset record:
-{len(self.vid_paths)} videos
-{len(self.map_paths)} keyframe maps
-{len(self.met_paths)} metadata files
+{len(self.vid_paths_map)} videos
 {len(self.img_paths)} keyframes
-{len(self.tran_paths)} transcription chunks
-{len(self.feat_siglip2_dense_paths)} SigLIP2 dense features
-{len(self.feat_beit3_dense_paths)} BeIT3 dense features
-{len(self.feat_bgem3_dense_paths)} BGE M3 dense features
-{len(self.feat_bgem3_sparse_token_id_paths)} BGE M3 sparse token ids
-{len(self.feat_bgem3_sparse_weight_paths)} BGE M3 sparse weights
 """)
 
 
@@ -108,40 +114,39 @@ class DataLoader:
 
     def form_points(self, indices):
         points = []
-        zipped = list(zip(
-            self.img_paths,
-            self.tran_paths,
-            self.feat_siglip2_dense_paths,
-            self.feat_beit3_dense_paths,
-            self.feat_bgem3_dense_paths,
-            self.feat_bgem3_sparse_token_id_paths,
-            self.feat_bgem3_sparse_weight_paths
-        ))
-        if indices == []: indices = range(len(zipped))
+        if indices == []: indices = range(len(self.img_paths))
 
         for i in indices:
-            img, tran, feat_siglip2_dense, feat_beit3_dense, feat_bgem3_dense, feat_bgem3_sparse_token_id, feat_bgem3_sparse_weights = zipped[i]
-            vid_id, frame_id = Path(img).parts[-2:]
-            vid = [path for path in self.vid_paths if vid_id in path][0]
-            img_map = [path for path in self.map_paths if vid_id in path][0]
-            met = [path for path in self.met_paths if vid_id in path][0]
+            frame_path = self.img_paths[i]
+            vid_id = Path(frame_path).parts[-2]
+            frame_id = Path(frame_path).stem
+            vid_path = self.vid_paths_map[vid_id]
 
-            # Convert them to ready-for-use
-            img_map = pd.read_csv(img_map, skiprows=range(1, int(frame_id)), nrows=1).iloc[0].tolist()
+            met_path = self.dataset_dir / "mets" / f"{vid_id}.json"
+            map_path = self.dataset_dir / "maps" / f"{vid_id}.csv"
+            tran_path = self.dataset_dir / "trans" / vid_id / f"{frame_id}.txt"
+            feat_siglip2_dense_path = self.dataset_dir / "feats" / "siglip2_dense" / vid_id / f"{frame_id}.npy"
+            feat_beit3_dense_path = self.dataset_dir / "feats" / "beit3_dense" / vid_id / f"{frame_id}.npy"
+            feat_bgem3_dense_path = self.dataset_dir / "feats" / "bgem3_dense" / vid_id / f"{frame_id}.npy"
+            feat_bgem3_sparse_token_ids_path = self.dataset_dir / "feats" / "bgem3_sparse" / "token_ids" / vid_id / f"{frame_id}.npy"
+            feat_bgem3_sparse_weights_path = self.dataset_dir / "feats" / "bgem3_sparse" / "weights" / vid_id / f"{frame_id}.npy"
+
+            # Fetch unloaded data
+            img_map = pd.read_csv(map_path, skiprows=range(1, int(frame_id)), nrows=1).iloc[0].tolist()
             try:
                 frame_order, time_order, fps = img_map
             except Exception:
                 frame_order, time_order, fps = img_map[1:]
-            with open(tran, 'r', encoding="utf-8") as f:
+            with open(tran_path, 'r', encoding="utf-8") as f:
                 tran = f.read()
-            with open(met, 'r', encoding='utf-8') as f:
+            with open(met_path, 'r', encoding='utf-8') as f:
                 met = json.load(f)
                 yt_link = met["watch_url"] + f"&t={time_order}s"
-            feat_siglip2_dense = np.load(feat_siglip2_dense).tolist()
-            feat_beit3_dense = np.load(feat_beit3_dense).tolist()
-            feat_bgem3_dense = np.load(feat_bgem3_dense).tolist()
-            feat_bgem3_sparse_token_id = np.load(feat_bgem3_sparse_token_id).tolist()
-            feat_bgem3_sparse_weights = np.load(feat_bgem3_sparse_weights).tolist()
+            feat_siglip2_dense = np.load(feat_siglip2_dense_path).tolist()
+            feat_beit3_dense = np.load(feat_beit3_dense_path).tolist()
+            feat_bgem3_dense = np.load(feat_bgem3_dense_path).tolist()
+            feat_bgem3_sparse_token_ids = np.load(feat_bgem3_sparse_token_ids_path).tolist()
+            feat_bgem3_sparse_weights = np.load(feat_bgem3_sparse_weights_path).tolist()
 
             # Point format
             point = models.PointStruct(
@@ -151,13 +156,13 @@ class DataLoader:
                     "beit3_dense": feat_beit3_dense,
                     "bgem3_dense": feat_bgem3_dense,
                     "bgem3_sparse": models.SparseVector(
-                        indices=feat_bgem3_sparse_token_id,
+                        indices=feat_bgem3_sparse_token_ids,
                         values=feat_bgem3_sparse_weights
                     )
                 },
                 payload={
-                    "frame_path": img,
-                    "vid_path": vid,
+                    "frame_path": frame_path,
+                    "vid_path": vid_path,
                     "frame_id": frame_id,
                     "vid_id": vid_id,
                     "frame_order": frame_order,
@@ -180,8 +185,8 @@ class DataLoader:
             self.database_client.upload_points(
                 collection_name=collection_name,
                 points=points,
-                batch_size=batch_size,
-                parallel=num_workers
+                batch_size=256,
+                parallel=num_workers,
             )
 
 
