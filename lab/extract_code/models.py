@@ -45,18 +45,25 @@ class SigLIP2Model(ExtractionModel):
         self.processor = AutoProcessor.from_pretrained(self.name)
 
 
-    def run(self, imgs: list[Image.Image], batch_size: int = 32):
+    def run(self, samples: list[Image.Image] | list[str], batch_size: int = 32):
         if not self.model or not self.processor:
             print(f"[ERROR] Cannot run inference on {self.name}: either the model or the processor is missing")
             return None
         feats = []
-        for i in range(0, len(imgs), batch_size):
-            j = len(imgs) if i + batch_size > len(imgs) else i + batch_size
-            batch = imgs[i:j]
-            preprocs = self.processor(images=batch, return_tensors='pt')
+        sample_type = "txt" if type(samples[0]) == str else "img"
+        for i in range(0, len(samples), batch_size):
+            j = len(samples) if i + batch_size > len(samples) else i + batch_size
+            batch = samples[i:j]
+            if sample_type == "txt":
+                preprocs = self.processor(text=batch, padding='max_length', truncation=True, return_tensors='pt')
+            else:
+                preprocs = self.processor(images=batch, return_tensors='pt')
             
             with torch.no_grad():
-                feat = self.model.get_image_features(**preprocs.to(self.device)).pooler_output
+                if sample_type == "txt":
+                    feat = self.model.get_text_features(**preprocs.to(self.device)).pooler_output
+                else:
+                    feat = self.model.get_image_features(**preprocs.to(self.device)).pooler_output
                 feat = F.normalize(feat)
 
             feats.append(feat.cpu())
