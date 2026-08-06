@@ -144,7 +144,7 @@ class KeyframeAndFeatureExtractor:
             ): pass
 
 
-class TranscriptFeatureProcessor:
+class TranscriptAndFeatureProcessor:
     def __init__(
         self,
         transcription_model: ExtractionModel,

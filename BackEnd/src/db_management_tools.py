@@ -47,29 +47,7 @@ class DataLoader:
         )
 
         self.vid_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("vids/**/*.mp4")} # Videos
-        # self.map_paths = [str(path) for path in self.dataset_dir.rglob("maps/**/*.csv")] # Keyframe maps on videos
-        # self.met_paths = [str(path) for path in self.dataset_dir.rglob("mets/**/*.json")] # Metadata
         self.img_paths = [str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")] # Keyframes
-        # self.tran_paths = [str(path) for path in self.dataset_dir.rglob("trans/**/*.txt")] # Transcriptions
-        # self.feat_siglip2_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/siglip2_dense/**/*.npy")]
-        # self.feat_beit3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/beit3_dense/**/*.npy")]
-        # self.feat_bgem3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_dense/**/*.npy")]
-        # self.feat_bgem3_sparse_token_id_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/token_ids/**/*.npy")]
-        # self.feat_bgem3_sparse_weight_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/weights/**/*.npy")]
-
-
-#         print(f"""Dataset record:
-# {len(self.vid_paths)} videos
-# {len(self.map_paths)} keyframe maps
-# {len(self.met_paths)} metadata files
-# {len(self.img_paths)} keyframes
-# {len(self.tran_paths)} transcription chunks
-# {len(self.feat_siglip2_dense_paths)} SigLIP2 dense features
-# {len(self.feat_beit3_dense_paths)} BeIT3 dense features
-# {len(self.feat_bgem3_dense_paths)} BGE M3 dense features
-# {len(self.feat_bgem3_sparse_token_id_paths)} BGE M3 sparse token ids
-# {len(self.feat_bgem3_sparse_weight_paths)} BGE M3 sparse weights
-# """)
 
         print(f"""Dataset record:
 {len(self.vid_paths_map)} videos
