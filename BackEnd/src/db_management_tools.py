@@ -309,6 +309,7 @@ class QueryManager:
         search_limit: int = 100,
         aggregation_neighbor_limit: int = 10,
         aggregation_weight: float = 0.5,
+        temporal_evaluation_weights: list[float] = [0.4, 0.3, 0.3]
     ):
         # Safeguard
         aggregation_neighbor_limit = np.clip(aggregation_neighbor_limit, 0, search_limit)
@@ -363,9 +364,9 @@ class QueryManager:
                     neighbor.vector["bgem3_sparse"].indices,
                     neighbor.vector["bgem3_sparse"].values
                 )
-                query_neighbor_score = (0.4 * siglip2_dense_score +
-                                        0.3 * bgem3_dense_score +
-                                        0.3 * bgem3_sparse_score)
+                query_neighbor_score = (temporal_evaluation_weights[0] * siglip2_dense_score +
+                                        temporal_evaluation_weights[1] * bgem3_dense_score +
+                                        temporal_evaluation_weights[2] * bgem3_sparse_score)
                 temporal_decay = np.exp(-((time_order - neighbor_time_order) ** 2) / (2 * delta ** 2))
                 total_temporal_score += query_neighbor_score * temporal_decay
 
