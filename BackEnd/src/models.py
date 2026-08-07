@@ -39,7 +39,6 @@ class SigLIP2Model(ExtractionModel):
         super().load()
         self.model = AutoModel.from_pretrained(
             self.name,
-            device_map="auto",
             dtype=torch.bfloat16 if self.quantized else torch.float32,
             attn_implementation=self.attention_implementation
         ).eval()
@@ -220,7 +219,6 @@ class BEiT3Model(ExtractionModel):
         super().load()
         self.model = AutoModel.from_pretrained(
             self.name,
-            device_map="auto",
             dtype=torch.bfloat16 if self.quantized else torch.float32,
             attn_implementation=self.attention_implementation
         ).eval()
