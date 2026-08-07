@@ -1,6 +1,7 @@
 import ipywidgets as widgets
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 from db_management_tools import QueryManager
 from pathlib import Path
 from qdrant_client import models
@@ -30,7 +31,6 @@ class NotebookDisplay:
 
 
 class Benchmarker:
-    #TODO: Change tolerance unit to seconds instead of frame ids
 
     def __init__(self, query_manager: QueryManager):
         self.query_manager = query_manager
@@ -95,7 +95,7 @@ class Benchmarker:
             task = row.task
             vid_id = row.vid_id
             queries = row.query.split('|')
-            time_orders = row.frame_ids.split('|')
+            time_orders = row.time_orders.split('|')
             if self.is_valid_test(task, queries, vid_id, time_orders):
                 test_info["task"] = task
                 test_info["queries"] = queries
@@ -112,7 +112,7 @@ class Benchmarker:
         collection_name: str,
         test_questions: list[dict] | str,
         test_settings: list[dict],
-        tolerance: int = 2,
+        tolerance: float = 2,
         save_record: bool = True
     ):
         if type(test_questions) == str:
@@ -121,23 +121,23 @@ class Benchmarker:
 
         metrics = []
         all_records = [] # (test, setting, result)
-        for test in test_questions:
+        for test in tqdm(test_questions, desc="Doing benchmark"):
             test_record = []
             vid_id = test["answer_vid_id"]
             for settings in test_settings:
                 for query, time_order in zip(test["queries"], test["answer_time_orders"]):
-                    if "use_aggregation" in settings:
+                    if settings.get("use_aggregation", False):
                         settings.pop("use_aggregation")
                         points = self.query_manager.aggregated_search(
+                            collection_name,
                             query,
-                            collection_name=collection_name,
                             search_limit=50,
                             **settings
                         )
                     else:
                         points = self.query_manager.search(
+                            collection_name,
                             query,
-                            collection_name=collection_name,
                             search_limit=50,
                             **settings
                         )

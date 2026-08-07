@@ -207,6 +207,12 @@ class QueryManager:
         self.text_text_feature_extractor.load()
 
 
+    def list_collections(self):
+        names = self.database_client.get_collections()
+        print("Currently available collections:")
+        for name in names: print(name)
+
+
     def encode_query(self, query: str, return_vectors: list[str] = ["siglip2_dense", "bgem3_dense", "bgem3_sparse"]):
         feat_query: dict[str, list | models.SparseVector | None] = {vect: None for vect in return_vectors}
         if "siglip2_dense" in return_vectors: feat_query["siglip2_dense"] = self.image_text_feature_extractor.run([query], 1).flatten().tolist()
