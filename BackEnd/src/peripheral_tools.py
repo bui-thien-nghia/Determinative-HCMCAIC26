@@ -40,12 +40,12 @@ class Benchmarker:
         self,
         candidate: models.ScoredPoint,
         ground_truth_vid_id: str,
-        ground_truth_frame_id: str | int,
-        tolerance: int = 1
+        ground_truth_time_order: str | float,
+        tolerance: float = 2
     ):
         try:
             if candidate.payload["vid_id"] != ground_truth_vid_id: return False
-            return abs(int(candidate.payload["frame_id"]) - int(ground_truth_frame_id)) <= tolerance
+            return abs(float(candidate.payload["time_order"]) - float(ground_truth_time_order)) <= tolerance
         except Exception: return False
 
 
@@ -53,16 +53,16 @@ class Benchmarker:
         self,
         candidate_list: list[models.ScoredPoint],
         ground_truth_vid_id: str,
-        ground_truth_frame_id: str,
-        k_list=[1, 5, 10, 50],
-        tolerance=1
+        ground_truth_time_order: str,
+        k_list: list[int] = [1, 5, 10, 50],
+        tolerance: float = 1,
     ):
         metrics = {f"Result@{k}": 0 for k in k_list}
         metrics["MRR"] = 0
 
         ranking = 0
         for i, candidate in enumerate(candidate_list):
-            verdict = self.is_correct(candidate, ground_truth_vid_id, ground_truth_frame_id, tolerance)
+            verdict = self.is_correct(candidate, ground_truth_vid_id, ground_truth_time_order, tolerance)
             if not verdict: continue
             ranking = i + 1
             break
@@ -74,11 +74,11 @@ class Benchmarker:
         return metrics
 
 
-    def is_valid_test(self, task: str, queries: list[str], vid_id: str, frame_ids: list[str]):
+    def is_valid_test(self, task: str, queries: list[str], vid_id: str, time_orders: list[str | float]):
         return (task.lower() in ["kis", "qa", "trake"]
                 and vid_id != ""
-                and (len(queries) and len(frame_ids))
-                and len(queries) == len(frame_ids))
+                and (len(queries) and len(time_orders))
+                and len(queries) == len(time_orders))
 
 
     def parse_csv_question_bank(self, question_bank_path):
@@ -89,18 +89,18 @@ class Benchmarker:
                 "task": "",
                 "queries": [],
                 "answer_vid_id": "",
-                "answer_frame_ids": []
+                "answer_time_orders": []
             }
 
             task = row.task
             vid_id = row.vid_id
             queries = row.query.split('|')
-            frame_ids = row.frame_ids.split('|')
-            if self.is_valid_test(task, queries, vid_id, frame_ids):
+            time_orders = row.frame_ids.split('|')
+            if self.is_valid_test(task, queries, vid_id, time_orders):
                 test_info["task"] = task
                 test_info["queries"] = queries
                 test_info["answer_vid_id"] = vid_id
-                test_info["answer_frame_ids"] = frame_ids
+                test_info["answer_time_orders"] = time_orders
 
             test_questions.append(test_info)
 
@@ -112,7 +112,7 @@ class Benchmarker:
         collection_name: str,
         test_questions: list[dict] | str,
         test_settings: list[dict],
-        tolerance: int = 3,
+        tolerance: int = 2,
         save_record: bool = True
     ):
         if type(test_questions) == str:
@@ -125,7 +125,7 @@ class Benchmarker:
             test_record = []
             vid_id = test["answer_vid_id"]
             for settings in test_settings:
-                for query, frame_id in zip(test["queries"], test["answer_frame_ids"]):
+                for query, time_order in zip(test["queries"], test["answer_time_orders"]):
                     if "use_aggregation" in settings:
                         settings.pop("use_aggregation")
                         points = self.query_manager.aggregated_search(
@@ -141,7 +141,7 @@ class Benchmarker:
                             search_limit=50,
                             **settings
                         )
-                    result = self.calculate_metrics(points, vid_id, frame_id, tolerance=tolerance)
+                    result = self.calculate_metrics(points, vid_id, time_order, tolerance=tolerance)
                     metrics = list(result.keys())
                     result = list(result.values())
                     test_record.append(result)
