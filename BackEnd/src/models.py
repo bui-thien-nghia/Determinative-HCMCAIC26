@@ -1,8 +1,10 @@
 import torch
 import torch.nn.functional as F
 import cv2
-from tqdm import tqdm
+import sys
 from PIL import Image
+
+DEVICE_OS = sys.platform.lower()
 
 # Standardized frame
 class ExtractionModel:
@@ -16,6 +18,8 @@ class ExtractionModel:
 
     # Placeholders
     def load(self):
+        if self.device == "cuda" and DEVICE_OS == "darwin": self.device = "mps"
+        if self.device == "mps" and DEVICE_OS == "win32": self.device = "cuda"
         print(f"[INFO] Loading {"quantized" if self.quantized else "full"} {self.name}")
         print(f"[INFO] {self.name} is on {self.device} device")
 
