@@ -1,6 +1,7 @@
 import ipywidgets as widgets
 import pandas as pd
 import numpy as np
+import time
 from tqdm import tqdm
 from db_management_tools import QueryManager
 from pathlib import Path
@@ -70,7 +71,7 @@ class Benchmarker:
         if not ranking: return metrics
 
         metrics["MRR"] = 1 / ranking
-        for k in k_list: metrics[f"Result@{k}"] = ranking <= k
+        for k in k_list: metrics[f"Result@{k}"] = int(ranking <= k)
         return metrics
 
 
@@ -82,7 +83,7 @@ class Benchmarker:
 
 
     def parse_csv_question_bank(self, question_bank_path):
-        bank = pd.read_csv(question_bank_path)
+        bank = pd.read_csv(question_bank_path, dtype=str)
         test_questions = []
         for row in bank.itertuples():
             test_info = {
@@ -119,38 +120,66 @@ class Benchmarker:
             if ".csv" not in test_questions: raise ValueError("Question bank must be in CSV format.")
             test_questions = self.parse_csv_question_bank(test_questions)
 
-        metrics = []
         all_records = [] # (test, setting, result)
         for test in tqdm(test_questions, desc="Doing benchmark"):
+
+            #! REMOVE THIS ON LARGE-SCALE TESTING
+            if "L0" in test["answer_vid_id"] or "L1" in test["answer_vid_id"]: continue
+            #!
+
             test_record = []
             vid_id = test["answer_vid_id"]
             for settings in test_settings:
                 for query, time_order in zip(test["queries"], test["answer_time_orders"]):
                     if settings.get("use_aggregation", False):
-                        settings.pop("use_aggregation")
+                        agg_settings = settings.copy()
+                        agg_settings.pop("use_aggregation")
+
+                        timer_start = time.time()
                         points = self.query_manager.aggregated_search(
                             collection_name,
                             query,
                             search_limit=50,
-                            **settings
+                            **agg_settings
                         )
+                        timer_end = time.time()
                     else:
+                        timer_start = time.time()
                         points = self.query_manager.search(
                             collection_name,
                             query,
                             search_limit=50,
                             **settings
                         )
+                        timer_end = time.time()
+
+                    runtime = abs(timer_end - timer_start)
                     result = self.calculate_metrics(points, vid_id, time_order, tolerance=tolerance)
-                    metrics = list(result.keys())
+                    result["runtime"] = runtime
+
                     result = list(result.values())
                     test_record.append(result)
             all_records.append(test_record)
 
         all_records = np.array(all_records)
         mean_records = np.mean(all_records, axis=0)
+        median_records = np.median(all_records, axis=0)
+        min_records = np.min(all_records, axis=0)
+        max_records = np.max(all_records, axis=0)
+        std_records = np.std(all_records, axis=0)
 
-        df = pd.DataFrame(mean_records, columns=metrics, index=[f"Method {i + 1}" for i in range(mean_records.shape[0])])
+        metrics = [
+            "Result@1", "Result@5", "Result@10", "Result@50",
+            "mean_MRR", "median_MRR", "min_MRR", "max_MRR", "std_MRR",
+            "mean_Runtime", "median_Runtime", "min_Runtime", "max_Runtime", "std_Runtime",
+        ]
+        final_records = np.column_stack((
+            mean_records[:,:-2],
+            mean_records[:,-2], median_records[:,-2], min_records[:,-2], max_records[:,-2], std_records[:,-2],
+            mean_records[:,-1], median_records[:,-1], min_records[:,-1], max_records[:,-1], std_records[:,-1],
+        ))
+
+        df = pd.DataFrame(final_records, columns=metrics, index=[f"Method {i + 1}" for i in range(final_records.shape[0])])
         if save_record:
             df.to_csv("benchmark_result.csv")
         else:

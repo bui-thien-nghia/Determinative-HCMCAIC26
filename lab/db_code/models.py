@@ -1,8 +1,27 @@
 import torch
 import torch.nn.functional as F
 import cv2
-from tqdm import tqdm
+import sys
 from PIL import Image
+
+import contextlib
+import tqdm
+
+@contextlib.contextmanager
+def disable_tqdm():
+    orig_init = tqdm.tqdm.__init__
+    
+    def masked_init(self, *args, **kwargs):
+        kwargs['disable'] = True
+        return orig_init(self, *args, **kwargs)
+        
+    tqdm.tqdm.__init__ = masked_init
+    try:
+        yield
+    finally:
+        tqdm.tqdm.__init__ = orig_init
+
+DEVICE_OS = sys.platform.lower()
 
 # Standardized frame
 class ExtractionModel:
@@ -16,6 +35,8 @@ class ExtractionModel:
 
     # Placeholders
     def load(self):
+        if self.device == "cuda" and DEVICE_OS == "darwin": self.device = "mps"
+        if self.device == "mps" and DEVICE_OS == "win32": self.device = "cuda"
         print(f"[INFO] Loading {"quantized" if self.quantized else "full"} {self.name}")
         print(f"[INFO] {self.name} is on {self.device} device")
 
@@ -35,7 +56,6 @@ class SigLIP2Model(ExtractionModel):
         super().load()
         self.model = AutoModel.from_pretrained(
             self.name,
-            device_map="auto",
             dtype=torch.bfloat16 if self.quantized else torch.float32,
             attn_implementation=self.attention_implementation
         ).eval()
@@ -197,7 +217,7 @@ class BGEM3Model(ExtractionModel):
         if not self.model:
             print(f"[ERROR] Cannot run inference on {self.name}: the model is missing")
             return None
-        feat_dicts = self.model.encode(
+        with disable_tqdm(): feat_dicts = self.model.encode(
             txts,
             batch_size=batch_size,
             return_dense=return_dense,
@@ -216,7 +236,6 @@ class BEiT3Model(ExtractionModel):
         super().load()
         self.model = AutoModel.from_pretrained(
             self.name,
-            device_map="auto",
             dtype=torch.bfloat16 if self.quantized else torch.float32,
             attn_implementation=self.attention_implementation
         ).eval()
