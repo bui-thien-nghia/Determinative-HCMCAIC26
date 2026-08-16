@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from tqdm import tqdm
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 
 class DataLoader:
     def __init__(self, dataset_dir: str, database_client_url="http://localhost:6333"):
