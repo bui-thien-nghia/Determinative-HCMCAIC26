@@ -4,6 +4,7 @@ import { useStore } from '../store'
 import clsx from 'clsx'
 import { getImageUrl } from '../utils/media'
 import type { SearchResult } from '../store'
+import { getResultCaption } from '../utils/results'
 
 function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargin = '400px') {
   const [isIntersecting, setIntersecting] = useState(false)
@@ -53,7 +54,14 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
 
   // The generic "isRechecked" (green checkmark on + button) only applies to KIS/QA
   const isRechecked = isInCurrentModeList
-  const imagePath = result.image_path || result.payload?.img_link || ''
+  const imagePath = result.thumbnailUrl || result.image_path || result.payload?.img_link || ''
+  const imageUrl = getImageUrl(imagePath)
+  const caption = getResultCaption(result)
+
+  useEffect(() => {
+    setImgLoaded(false)
+    setImgError(!imageUrl)
+  }, [imageUrl])
 
   const handleCopyId = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -138,9 +146,9 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                 <span className="text-[10px] uppercase tracking-wider">Image Broken</span>
               </div>
             )}
-            {!imgError && (
+            {imageUrl && !imgError && (
               <img
-                src={getImageUrl(imagePath)}
+                src={imageUrl}
                 alt={`Frame ${result.payload?.frame_id}`}
                 className={clsx(
                   "absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105",
@@ -247,9 +255,9 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                     {result.payload.people_count}p
                   </span>
                 )}
-                {result.payload?.caption && (
-                  <span className="text-slate-500 text-[8px] italic truncate w-full mt-0.5" title={result.payload.caption}>
-                    {result.payload.caption.slice(0, 60)}{result.payload.caption.length > 60 ? '…' : ''}
+                {caption && (
+                  <span className="text-slate-500 text-[8px] italic truncate w-full mt-0.5" title={caption}>
+                    {caption.slice(0, 60)}{caption.length > 60 ? '…' : ''}
                   </span>
                 )}
               </div>

@@ -73,7 +73,10 @@ export default function ResultGrid() {
 
   const displayResults = useMemo(() => {
     if (isTrakeStage2 && trakeState.selectedVideoId) {
-      return searchResults.filter(r => r.payload?.video_id === trakeState.selectedVideoId)
+      // The teammate Django API currently exposes search endpoints only, not a full
+      // selected-video frame browsing endpoint. Stage 2 therefore uses retrieved
+      // frames already present in frontend state for the selected video.
+      return searchResults.filter((res) => res.payload?.video_id === trakeState.selectedVideoId)
     }
     return searchResults
   }, [searchResults, isTrakeStage2, trakeState.selectedVideoId])
@@ -126,7 +129,7 @@ export default function ResultGrid() {
         <div className="w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center border border-slate-800">
           <Loader2 size={24} className="text-blue-500 animate-spin" />
         </div>
-        <p className="text-sm">Searching mock vector database...</p>
+        <p className="text-sm">Searching Qdrant...</p>
       </div>
     )
   }
@@ -137,6 +140,13 @@ export default function ResultGrid() {
         <div className="mb-4 px-4 py-2 bg-blue-900/20 border border-blue-500/30 rounded text-blue-300 text-sm flex items-center gap-2 shrink-0">
           <Film size={16} className="text-blue-400" />
           Showing retrieved frames from <strong>{trakeState.selectedVideoId}</strong>
+          <span className="text-blue-400/80">({displayResults.length})</span>
+        </div>
+      )}
+
+      {isTrakeStage2 && (
+        <div className="mb-4 px-4 py-2 bg-amber-900/20 border border-amber-500/30 rounded text-amber-200 text-xs shrink-0">
+          Full selected-video frame browsing is unavailable because the current Django API exposes only search endpoints.
         </div>
       )}
 

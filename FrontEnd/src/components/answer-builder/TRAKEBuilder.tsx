@@ -1,6 +1,7 @@
 import { X, Film, Plus, ChevronRight, AlertTriangle, Check, Trash2 } from 'lucide-react'
 import { useStore } from '../../store'
 import { getImageUrl } from '../../utils/media'
+import { formatSeconds } from '../../utils/results'
 
 export default function TRAKEBuilder() {
   const {
@@ -18,17 +19,24 @@ export default function TRAKEBuilder() {
   const { selectedVideoId, stage, activeEventId, events } = trakeState
 
   // ── Temporal validation ────────────────────────────────────────
+  const getCandidateTime = (candidate: NonNullable<typeof events[number]['selectedCandidate']>) => {
+    const value = candidate.payload.timestamp ?? candidate.payload.time_order
+    const numeric = Number(value)
+    return Number.isFinite(numeric) ? numeric : null
+  }
+
   const getTemporalWarnings = () => {
     const warnings: Record<string, string> = {}
-    let lastFrame = -1
+    let lastTime: number | null = null
     let lastLabel = ''
     for (const evt of events) {
       if (!evt.selectedCandidate) continue
-      const f = parseInt(String(evt.selectedCandidate.payload.frame_id).replace(/\D/g, ''), 10) || 0
-      if (lastFrame !== -1 && f <= lastFrame) {
-        warnings[evt.id] = `Frame ${f} ≤ ${lastLabel} (${lastFrame}) — out of order`
+      const seconds = getCandidateTime(evt.selectedCandidate)
+      if (seconds == null) continue
+      if (lastTime != null && seconds <= lastTime) {
+        warnings[evt.id] = `${formatSeconds(seconds)} ≤ ${lastLabel} (${formatSeconds(lastTime)}) — out of order`
       }
-      lastFrame = f
+      lastTime = seconds
       lastLabel = evt.label
     }
     return warnings
@@ -223,6 +231,7 @@ export default function TRAKEBuilder() {
                 const isActive = activeEventId === evt.id
                 const isComplete = !!evt.selectedCandidate
                 const hasWarning = !!temporalWarnings[evt.id]
+                const candidateTime = evt.selectedCandidate ? getCandidateTime(evt.selectedCandidate) : null
 
                 return (
                   <div key={evt.id} className="flex gap-2">
@@ -300,6 +309,11 @@ export default function TRAKEBuilder() {
                                 <div className="text-[10px] text-slate-400 font-mono">
                                   Frame <span className="text-slate-200 font-semibold">{String(evt.selectedCandidate!.payload.frame_id)}</span>
                                 </div>
+                                {candidateTime != null && (
+                                  <div className="text-[9px] text-slate-500 font-mono">
+                                    {formatSeconds(candidateTime, 0)}
+                                  </div>
+                                )}
                                 {evt.selectedCandidate!.payload.score != null && (
                                   <div className="text-[9px] text-slate-500">
                                     Score: {Number(evt.selectedCandidate!.payload.score).toFixed(4)}

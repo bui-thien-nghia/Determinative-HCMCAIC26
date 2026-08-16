@@ -69,7 +69,7 @@ function App() {
               <div className="relative group/fast">
                 <button
                   onClick={() => setDisplayMode('fast')}
-                  aria-label="Fast Mode: lightweight view for quick searching."
+                  aria-label="Fast Mode: standard retrieval for quick results."
                   aria-pressed={displayMode === 'fast'}
                   className={`px-3 py-1 text-[11px] font-bold tracking-wider transition-colors ${
                     displayMode === 'fast' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
@@ -82,13 +82,13 @@ function App() {
               <div className="relative group/full">
                 <button
                   onClick={() => setDisplayMode('full')}
-                  aria-label="Full Mode: detailed view for inspection with extra metadata."
+                  aria-label="Deep Mode: aggregated retrieval and reranking for more refined results."
                   aria-pressed={displayMode === 'full'}
                   className={`px-3 py-1 text-[11px] font-bold tracking-wider transition-colors ${
                     displayMode === 'full' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
                   }`}
                 >
-                  Full
+                  Deep
                 </button>
               </div>
             </div>
@@ -96,7 +96,7 @@ function App() {
             {/* Info button */}
             <div className="relative group/modeinfo">
               <button
-                aria-label="Display mode information: Fast Mode and Full Mode explained"
+                aria-label="Display mode information: Fast Mode and Deep Mode explained"
                 className="w-5 h-5 rounded-full border border-slate-600 bg-slate-800 hover:bg-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200 text-[10px] font-bold flex items-center justify-center transition-colors shrink-0"
               >
                 i
@@ -109,18 +109,18 @@ function App() {
                   <div className="p-3 flex flex-col gap-1.5">
                     <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>
-                      Fast Mode
+                      Fast
                     </div>
-                    <p className="text-slate-400">Lightweight view for quick searching. Shows only thumbnail, video ID, frame index, score, and essential badges.</p>
-                    <p className="text-slate-500 italic">Best for fast competition retrieval and smoother scrolling.</p>
+                    <p className="text-slate-400">Standard retrieval for quick results.</p>
+                    <p className="text-slate-500 italic">Uses POST /api/search/.</p>
                   </div>
                   <div className="p-3 flex flex-col gap-1.5">
                     <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
                       <span className="w-2 h-2 rounded-full bg-indigo-400 shrink-0"></span>
-                      Full Mode
+                      Deep
                     </div>
-                    <p className="text-slate-400">Detailed view for inspection. Shows OCR, ASR, YOLO/object badges, people count, caption snippets, and extra metadata when available.</p>
-                    <p className="text-slate-500 italic">Best for checking evidence before adding answers.</p>
+                    <p className="text-slate-400">Aggregated retrieval and reranking for more refined results.</p>
+                    <p className="text-slate-500 italic">Uses POST /api/aggregatedsearch/.</p>
                   </div>
                 </div>
               </div>

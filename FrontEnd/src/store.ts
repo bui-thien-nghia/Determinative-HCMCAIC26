@@ -3,20 +3,36 @@ import { create } from 'zustand'
 export interface SearchResult {
   id: string
   score: number
+  rank?: number
+  videoId?: string
+  frameId?: string
+  frameOrder?: number | null
+  timeOrder?: number | null
+  fps?: number | null
+  thumbnailUrl?: string | null
+  videoUrl?: string | null
+  youtubeUrl?: string | null
+  transcript?: string | null
   image_path?: string
   video_id?: string
-  timestamp?: number
+  timestamp?: number | null
   payload: {
     video_id: string
     frame_id: string | number
     img_link?: string
-    timestamp?: number
+    timestamp?: number | null
     caption?: string
     ocr?: string
     asr?: string
     objects?: string[]
     people_count?: number
     keyframe_id?: string | number
+    score?: number
+    transcript?: string | null
+    time_order?: number | null
+    frame_order?: number | null
+    fps?: number | null
+    yt_link?: string | null
     [key: string]: unknown
   }
 }
@@ -148,8 +164,8 @@ const loadHistory = (): SearchHistoryItem[] => {
 }
 
 export const useStore = create<AppState>((set) => ({
-  currentDataset: 'AIC2026_SIGLIP',
-  currentModel: 'siglip-so400m',
+  currentDataset: 'aic2026',
+  currentModel: 'siglip2-bgem3',
   searchResults: [],
   recheckList: [],
   trakeState: {
@@ -337,7 +353,7 @@ export const useStore = create<AppState>((set) => ({
     const mode = state.mode
     const item = {
       id: result.id || `${result.payload?.video_id}_${result.payload?.frame_id}_${Date.now()}`,
-      img_link: result.image_path || result.payload?.img_link || '',
+      img_link: result.thumbnailUrl || result.image_path || result.payload?.img_link || '',
       payload: result.payload,
       answerType: mode as any,
       addedAt: Date.now(),

@@ -1,56 +1,206 @@
-import { useEffect, useState } from 'react'
-import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Type, FileVideo } from 'lucide-react'
-import { useStore } from '../store'
-import { getImageUrl } from '../utils/media'
+import { useEffect, useMemo, useState } from 'react'
+import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Type, FileVideo, Copy } from 'lucide-react'
+import { useStore, type SearchResult } from '../store'
+import { getImageUrl, getNeighborKeyframes, type NeighborFrame } from '../utils/media'
+import { captureVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
+import {
+  copyText,
+  formatSeconds,
+  getPortableImagePath,
+  getRawImagePath,
+  getResultCaption,
+  getResultFrameId,
+  getResultScore,
+  getResultTimestamp,
+  getResultVideoId,
+} from '../utils/results'
 
 export default function PreviewModal() {
-  const { previewResult, setPreviewResult, searchResults, addToRecheckList, setPlayingVideo, addToast } = useStore()
+  const {
+    previewResult,
+    setPreviewResult,
+    searchResults,
+    setPlayingVideo,
+    addToast,
+    addCandidate,
+    lastSearch,
+    mode,
+    recheckList,
+    updateRecheckItemAnswer,
+  } = useStore()
   const [activeTab, setActiveTab] = useState('Overview')
+  const [neighbors, setNeighbors] = useState<NeighborFrame[]>([])
+  const [neighborsLoading, setNeighborsLoading] = useState(false)
+  const [neighborsError, setNeighborsError] = useState<string | null>(null)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
+  const [qaAnswer, setQaAnswer] = useState('')
+  const [capturedFrame, setCapturedFrame] = useState<CapturedVideoFrame | null>(null)
+  const [captureState, setCaptureState] = useState<'idle' | 'loading' | 'ready' | 'fallback'>('idle')
 
   const currentIndex = searchResults.findIndex(r => r.id === previewResult?.id)
+  const videoId = getResultVideoId(previewResult)
+  const frameId = getResultFrameId(previewResult)
+  const timestamp = getResultTimestamp(previewResult)
+  const caption = getResultCaption(previewResult)
+  const imagePath = getRawImagePath(previewResult)
+  const portableImagePath = getPortableImagePath(imagePath)
+  const existingCandidate = previewResult
+    ? recheckList.find((item) => item.id === previewResult.id)
+    : undefined
+
+  const currentNeighborKey = useMemo(() => `${videoId}:${frameId}`, [videoId, frameId])
+
+  const goPrevious = () => {
+    if (currentIndex > 0) setPreviewResult(searchResults[currentIndex - 1])
+  }
+
+  const goNext = () => {
+    if (currentIndex < searchResults.length - 1) setPreviewResult(searchResults[currentIndex + 1])
+  }
 
   const handlePrevious = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (currentIndex > 0) setPreviewResult(searchResults[currentIndex - 1])
+    goPrevious()
   }
 
   const handleNext = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (currentIndex < searchResults.length - 1) setPreviewResult(searchResults[currentIndex + 1])
+    goNext()
   }
 
   const handleClose = () => setPreviewResult(null)
 
-  const handleAddToBuilder = async () => {
+  const handleAddToBuilder = () => {
     if (!previewResult) return
-    try {
-      const item = {
-        id: previewResult.id || `${previewResult.payload?.video_id}_${previewResult.payload?.frame_id}_${Date.now()}`,
-        img_link: previewResult.payload.img_link || previewResult.image_path || '',
-        payload: previewResult.payload,
-        answerType: useStore.getState().mode as any
-      }
+    addCandidate(previewResult)
+  }
 
-      const { api } = await import('../api')
-      api.addRecheck(item).catch(console.error)
-
-      addToRecheckList(item)
-      addToast('Added to Answer Builder', 'success')
-    } catch (err) {
-      console.error(err)
-      addToast('Add failed', 'error')
+  const handleCopy = async (value: string, label: string) => {
+    if (!value) return
+    const copied = await copyText(value)
+    if (copied) {
+      setCopiedField(label)
+      addToast(`Copied ${label}`, 'success')
+      window.setTimeout(() => setCopiedField(null), 1200)
     }
   }
 
+  const handleAddQaCandidate = () => {
+    if (!previewResult || mode !== 'QA') return
+    addCandidate(previewResult)
+    const qaCandidate = useStore.getState().recheckList.find((item) => (
+      item.id === previewResult.id && item.answerType === 'QA'
+    ))
+    if (qaCandidate && qaAnswer.trim()) {
+      updateRecheckItemAnswer(previewResult.id, qaAnswer)
+    }
+  }
+
+  const handleNeighborClick = (neighbor: NeighborFrame) => {
+    if (!previewResult) return
+    const sameFrame = neighbor.payload.frame_id === frameId
+    const nextResult: SearchResult = {
+      ...previewResult,
+      id: neighbor.id,
+      score: sameFrame ? previewResult.score : 0,
+      video_id: neighbor.video_id,
+      videoId: neighbor.video_id,
+      frameId: neighbor.payload.frame_id,
+      timestamp: neighbor.timestamp ?? null,
+      timeOrder: neighbor.payload.time_order ?? null,
+      frameOrder: neighbor.payload.frame_order ?? null,
+      fps: neighbor.payload.fps ?? null,
+      image_path: neighbor.image_path,
+      thumbnailUrl: neighbor.image_path,
+      payload: {
+        ...previewResult.payload,
+        ...neighbor.payload,
+        caption: sameFrame ? caption : neighbor.payload.caption || '',
+      },
+    }
+    setPreviewResult(nextResult)
+  }
+
   useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false
+      const tagName = target.tagName.toLowerCase()
+      return tagName === 'input' || tagName === 'textarea' || tagName === 'select' || target.isContentEditable
+    }
+
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return
       if (e.key === 'Escape') handleClose()
-      if (e.key === 'ArrowLeft' && currentIndex > 0) setPreviewResult(searchResults[currentIndex - 1])
-      if (e.key === 'ArrowRight' && currentIndex < searchResults.length - 1) setPreviewResult(searchResults[currentIndex + 1])
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowLeft') && currentIndex > 0) {
+        e.preventDefault()
+        goPrevious()
+      }
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowRight') && currentIndex < searchResults.length - 1) {
+        e.preventDefault()
+        goNext()
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [currentIndex, searchResults, setPreviewResult])
+
+  useEffect(() => {
+    if (!previewResult) return
+    const existing = recheckList.find((item) => item.id === previewResult.id && item.answerType === 'QA')
+    setQaAnswer(existing?.answer || '')
+  }, [previewResult?.id, mode])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!previewResult || activeTab !== 'Neighbors' || !videoId || !frameId) return
+
+    setNeighborsLoading(true)
+    setNeighborsError(null)
+    getNeighborKeyframes(videoId, frameId, 3)
+      .then((frames) => {
+        if (!cancelled) setNeighbors(frames)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setNeighbors([])
+          setNeighborsError(error instanceof Error ? error.message : 'Neighbor lookup failed')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setNeighborsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, currentNeighborKey, previewResult, videoId, frameId])
+
+  useEffect(() => {
+    let cancelled = false
+    setCapturedFrame(null)
+
+    if (!previewResult || !videoId || !Number.isFinite(timestamp)) {
+      setCaptureState('fallback')
+      return
+    }
+
+    setCaptureState('loading')
+    captureVideoFrame(videoId, timestamp)
+      .then((frame) => {
+        if (cancelled) return
+        setCapturedFrame(frame)
+        setCaptureState('ready')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setCapturedFrame(null)
+        setCaptureState('fallback')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [previewResult?.id, videoId, timestamp])
 
   if (!previewResult) return null
 
@@ -61,7 +211,15 @@ export default function PreviewModal() {
     { id: 'OCR', icon: Type, enabled: true }
   ]
 
-  const imagePath = previewResult.payload.img_link || previewResult.image_path || ''
+  const imageUrl = getImageUrl(imagePath)
+  const previewImageUrl = capturedFrame?.url || imageUrl
+  const modelName = typeof previewResult.payload.model === 'string' ? previewResult.payload.model : ''
+  const ocrText = typeof previewResult.payload.ocr === 'string' ? previewResult.payload.ocr.trim() : ''
+  const previewSourceLabel = captureState === 'ready'
+    ? `Video frame @ ${formatSeconds(capturedFrame?.timestamp ?? timestamp)}`
+    : captureState === 'loading'
+      ? 'Loading exact video frame...'
+      : 'Stored keyframe fallback'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-8" onClick={handleClose}>
@@ -86,33 +244,79 @@ export default function PreviewModal() {
         onClick={e => e.stopPropagation()}
       >
         <div className="flex-1 bg-black relative flex items-center justify-center group overflow-hidden">
-          <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded border border-white/10 text-sm font-mono z-10 shadow-lg">
-            Result {currentIndex + 1} of {searchResults.length}
+          <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md text-white rounded border border-white/10 text-sm font-mono z-10 shadow-lg flex items-center overflow-hidden">
+            <button
+              onClick={handlePrevious}
+              disabled={currentIndex <= 0}
+              className="px-2.5 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-300"
+            >
+              ← PREV
+            </button>
+            <span className="px-3 py-1.5 border-x border-white/10">
+              Result {currentIndex + 1} of {searchResults.length}
+            </span>
+            <button
+              onClick={handleNext}
+              disabled={currentIndex >= searchResults.length - 1}
+              className="px-2.5 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-300"
+            >
+              NEXT →
+            </button>
           </div>
-          <img
-            src={getImageUrl(imagePath)}
-            alt="Preview"
-            className="w-full h-full object-contain"
-          />
+          <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded border border-white/10 text-xs font-mono z-10 shadow-lg">
+            {captureState === 'ready'
+              ? `VIDEO FRAME • ${formatSeconds(capturedFrame?.timestamp ?? timestamp)}`
+              : previewSourceLabel}
+          </div>
+          {previewImageUrl ? (
+            <img
+              src={previewImageUrl}
+              alt="Preview"
+              className="w-full h-full object-contain"
+            />
+          ) : (
+            <div className="text-slate-500 flex flex-col items-center gap-2">
+              <ImageIcon size={32} />
+              <span className="text-sm">Image unavailable</span>
+            </div>
+          )}
         </div>
 
         <div className="w-[450px] bg-slate-950 flex flex-col shrink-0 border-l border-slate-800">
-          <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900">
-            <div>
-              <div className="text-sm font-bold text-slate-200 truncate pr-4" title={previewResult.payload.video_id}>
-                {previewResult.payload.video_id}
+          <div className="flex items-center justify-between gap-3 p-4 border-b border-slate-800 bg-slate-900">
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-slate-200 truncate pr-4" title={videoId}>
+                {videoId || 'Unknown video'}
               </div>
               <div className="text-xs text-slate-400 font-mono mt-0.5">
-                Frame: {previewResult.payload.frame_id}
-                {previewResult.payload.timestamp && ` • ${previewResult.payload.timestamp}s`}
+                Frame: {frameId || 'N/A'} - {formatSeconds(timestamp)}
               </div>
             </div>
-            <button
-              onClick={handleClose}
-              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-            >
-              <X size={20} />
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={handleAddToBuilder}
+                className="px-2.5 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded flex items-center gap-1.5 transition-colors"
+              >
+                <Plus size={14} />
+                {existingCandidate ? 'ADDED ✓' : 'ADD'}
+              </button>
+              <button
+                onClick={() => {
+                  handleClose()
+                  setPlayingVideo(previewResult)
+                }}
+                className="px-2.5 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded flex items-center gap-1.5 transition-colors border border-slate-700"
+              >
+                <FileVideo size={14} />
+                WATCH
+              </button>
+              <button
+                onClick={handleClose}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
           </div>
 
           <div className="flex border-b border-slate-800 bg-slate-900/50 px-2 pt-2 gap-1 overflow-x-auto">
@@ -139,58 +343,135 @@ export default function PreviewModal() {
 
           <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
             {activeTab === 'Overview' && (
-              <div className="flex flex-col gap-6">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-slate-900 p-3 rounded border border-slate-800">
-                    <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Final Score</div>
-                    <div className="text-lg font-mono text-white">{previewResult.score.toFixed(4)}</div>
-                  </div>
-                  <div className="bg-slate-900 p-3 rounded border border-slate-800">
-                    <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Image Path</div>
-                    <div className="text-xs font-mono text-slate-300 truncate" title={imagePath}>{imagePath}</div>
-                  </div>
+              <div className="flex flex-col gap-5">
+                <div className="grid grid-cols-2 gap-3">
+                  <InfoTile label="Video" value={videoId || 'N/A'} />
+                  <InfoTile label="Frame ID" value={frameId || 'N/A'} mono />
+                  <InfoTile label="Timestamp" value={formatSeconds(timestamp)} mono />
+                  <InfoTile label="Preview Source" value={previewSourceLabel} />
+                  <InfoTile label="Score" value={getResultScore(previewResult).toFixed(4)} mono />
+                  <InfoTile label="Model" value={modelName || '--'} />
+                  <InfoTile label="Current Query" value={lastSearch?.query || '--'} />
                 </div>
 
                 <div>
                   <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Extracted Context</div>
-                  <div className="bg-slate-900 p-4 rounded border border-slate-800 text-sm text-slate-300 italic leading-relaxed">
-                    {previewResult.payload.caption || 'No visual caption available for this frame.'}
+                  <div className="bg-slate-900 p-4 rounded border border-slate-800 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
+                    {caption || 'No transcript available for this frame.'}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 mt-4">
+                <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                  <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Image Path</div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs font-mono text-slate-200 truncate flex-1" title={portableImagePath}>
+                      {portableImagePath || '--'}
+                    </div>
+                    <button
+                      onClick={() => handleCopy(portableImagePath, 'image path')}
+                      disabled={!portableImagePath}
+                      className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded disabled:opacity-40"
+                      title="Copy portable image path"
+                    >
+                      <Copy size={14} />
+                    </button>
+                  </div>
                   <button
-                    onClick={handleAddToBuilder}
-                    className="bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded flex items-center justify-center gap-2 transition-colors shadow-lg shadow-blue-900/20"
+                    onClick={() => handleCopy(imagePath, 'raw path')}
+                    disabled={!imagePath}
+                    className="mt-2 text-[11px] text-slate-500 hover:text-slate-300 disabled:opacity-40"
                   >
-                    <Plus size={18} />
-                    ADD TO BUILDER
-                  </button>
-                  <button
-                    onClick={() => {
-                      handleClose()
-                      setPlayingVideo(previewResult)
-                    }}
-                    className="bg-slate-800 hover:bg-slate-700 text-white font-medium py-3 rounded flex items-center justify-center gap-2 transition-colors border border-slate-700"
-                  >
-                    <FileVideo size={18} />
-                    WATCH VIDEO
+                    {copiedField === 'raw path' ? 'Copied raw path' : 'Copy raw path'}
                   </button>
                 </div>
+
               </div>
             )}
 
             {activeTab === 'Neighbors' && (
-              <div className="text-sm text-slate-500 flex flex-col items-center justify-center h-40 gap-3">
-                <Map size={24} className="text-slate-700" />
-                <p>Temporal neighbors will appear here.</p>
+              <div className="flex flex-col gap-3">
+                <div className="text-xs text-slate-500 leading-relaxed">
+                  Neighboring keyframe files from AIC26/imgs/{videoId}. Timestamps are shown only when available in maps/{videoId}.csv.
+                </div>
+                {neighborsLoading && (
+                  <div className="text-sm text-slate-500 flex items-center justify-center h-32">Loading neighbors...</div>
+                )}
+                {neighborsError && (
+                  <div className="text-sm text-amber-400 bg-amber-950/30 border border-amber-900/50 rounded p-3">{neighborsError}</div>
+                )}
+                {!neighborsLoading && !neighborsError && neighbors.length === 0 && (
+                  <div className="text-sm text-slate-500 flex flex-col items-center justify-center h-32 gap-3">
+                    <Map size={24} className="text-slate-700" />
+                    <p>No neighboring keyframe files found.</p>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  {neighbors.map((neighbor) => {
+                    const neighborFrameId = String(neighbor.payload.frame_id)
+                    const isCurrent = neighborFrameId === frameId
+                    const neighborTime = neighbor.timestamp
+                    return (
+                      <button
+                        key={neighbor.id}
+                        onClick={() => handleNeighborClick(neighbor)}
+                        className={`text-left rounded border overflow-hidden transition ${
+                          isCurrent
+                            ? 'border-blue-500 bg-blue-950/30'
+                            : 'border-slate-800 bg-slate-900 hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="aspect-video bg-black">
+                          <img
+                            src={getImageUrl(neighbor.image_path)}
+                            alt={`Frame ${neighborFrameId}`}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="p-2">
+                          <div className="text-xs font-mono text-slate-200">Frame {neighborFrameId}</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            {neighborTime == null ? 'Timestamp unavailable' : formatSeconds(neighborTime, 0)}
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             )}
 
             {activeTab === 'Q&A Answer' && (
-              <div className="text-sm text-slate-500 flex flex-col items-center justify-center h-40 gap-3">
-                <MessageSquare size={24} className="text-slate-700" />
-                <p>Q&A extraction tools coming soon.</p>
+              <div className="flex flex-col gap-4">
+                {mode === 'QA' ? (
+                  <>
+                    <InfoBlock label="Question" value={lastSearch?.query || '--'} />
+                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} />
+                    <div>
+                      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Answer</div>
+                      <textarea
+                        value={qaAnswer}
+                        onChange={(event) => setQaAnswer(event.target.value)}
+                        rows={5}
+                        className="w-full resize-none rounded border border-slate-800 bg-slate-900 p-3 text-sm text-slate-200 outline-none focus:border-blue-500"
+                        placeholder="Enter the QA answer manually."
+                      />
+                    </div>
+                    <button
+                      onClick={handleAddQaCandidate}
+                      className="bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded flex items-center justify-center gap-2 transition-colors"
+                    >
+                      <Plus size={16} />
+                      ADD QA CANDIDATE
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="rounded border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">
+                      QA answer editing is available in QA mode.
+                    </div>
+                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} />
+                  </>
+                )}
               </div>
             )}
 
@@ -199,16 +480,33 @@ export default function PreviewModal() {
                 <Type size={24} className="text-slate-700" />
                 <div>
                   <div className="text-xs text-slate-500 uppercase font-bold mb-1">OCR</div>
-                  <p>{previewResult.payload.ocr ? previewResult.payload.ocr : 'No OCR text detected.'}</p>
-                </div>
-                <div>
-                  <div className="text-xs text-slate-500 uppercase font-bold mb-1">ASR</div>
-                  <p>{previewResult.payload.asr ? previewResult.payload.asr : 'No ASR transcript.'}</p>
+                  <p className="whitespace-pre-wrap">{ocrText || 'OCR text is not available from the current retrieval API.'}</p>
                 </div>
               </div>
             )}
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function InfoTile({ label, value, secondary, mono = false }: { label: string; value: string; secondary?: string; mono?: boolean }) {
+  return (
+    <div className="bg-slate-900 p-3 rounded border border-slate-800 min-w-0">
+      <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{label}</div>
+      <div className={`text-sm text-white truncate ${mono ? 'font-mono' : ''}`} title={value}>{value}</div>
+      {secondary && <div className="text-[11px] text-slate-500 font-mono mt-0.5">{secondary}</div>}
+    </div>
+  )
+}
+
+function InfoBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">{label}</div>
+      <div className="bg-slate-900 p-3 rounded border border-slate-800 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
+        {value}
       </div>
     </div>
   )
