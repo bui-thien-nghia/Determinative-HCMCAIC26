@@ -1,8 +1,27 @@
 import torch
 import torch.nn.functional as F
 import cv2
-from tqdm import tqdm
+import sys
 from PIL import Image
+
+import contextlib
+import tqdm
+
+@contextlib.contextmanager
+def disable_tqdm():
+    orig_init = tqdm.tqdm.__init__
+    
+    def masked_init(self, *args, **kwargs):
+        kwargs['disable'] = True
+        return orig_init(self, *args, **kwargs)
+        
+    tqdm.tqdm.__init__ = masked_init
+    try:
+        yield
+    finally:
+        tqdm.tqdm.__init__ = orig_init
+
+DEVICE_OS = sys.platform.lower()
 
 # Standardized frame
 class ExtractionModel:
@@ -16,6 +35,8 @@ class ExtractionModel:
 
     # Placeholders
     def load(self):
+        if self.device == "cuda" and DEVICE_OS == "darwin": self.device = "mps"
+        if self.device == "mps" and DEVICE_OS == "win32": self.device = "cuda"
         print(f"[INFO] Loading {"quantized" if self.quantized else "full"} {self.name}")
         print(f"[INFO] {self.name} is on {self.device} device")
 
@@ -35,7 +56,6 @@ class SigLIP2Model(ExtractionModel):
         super().load()
         self.model = AutoModel.from_pretrained(
             self.name,
-            device_map="auto",
             dtype=torch.bfloat16 if self.quantized else torch.float32,
             attn_implementation=self.attention_implementation
         ).eval()
@@ -197,7 +217,7 @@ class BGEM3Model(ExtractionModel):
         if not self.model:
             print(f"[ERROR] Cannot run inference on {self.name}: the model is missing")
             return None
-        feat_dicts = self.model.encode(
+        with disable_tqdm(): feat_dicts = self.model.encode(
             txts,
             batch_size=batch_size,
             return_dense=return_dense,
@@ -205,6 +225,46 @@ class BGEM3Model(ExtractionModel):
             return_colbert_vecs=return_multi,
         )
         return feat_dicts["dense_vecs"], feat_dicts["lexical_weights"], feat_dicts["colbert_vecs"]
+
+
+class BGEM3Model2(ExtractionModel):
+    def __init__(self, name, device="default", quantized=True, attention_implementation=None):
+        super().__init__(name, device, quantized, attention_implementation)
+        
+    
+    def load(self):
+        super().load()
+        self.model = AutoModel.from_pretrained(
+            self.name,
+            dtype=torch.bfloat16 if self.quantized else torch.float32,
+            attn_implementation=self.attention_implementation
+        ).eval()
+        if self.device != "default":
+            self.model = self.model.to(self.device)
+        self.device = str(self.model.device)
+        self.processor = AutoProcessor.from_pretrained(self.name)
+
+
+    def run(self, imgs: list[Image.Image], batch_size: int = 32, get_style_state: bool = False):
+        if not self.model or not self.processor:
+            print(f"[ERROR] Cannot run inference on {self.name}: either the model or the processor is missing")
+            return None
+        feats = []
+        for i in range(0, len(imgs), batch_size):
+            j = len(imgs) if i + batch_size > len(imgs) else i + batch_size
+            batch = imgs[i:j]
+            preprocs = self.processor(text=batch, padding=True, truncation=True, return_tensors="pt")
+            
+            with torch.no_grad():
+                if get_style_state:
+                    feat = self.model(**preprocs.to(self.device), output_hidden_state=True).hidden_states[12]
+                else:
+                    feat = self.model(**preprocs.to(self.device)).pooler_output
+                    feat = F.normalize(feat)
+
+            feats.append(feat.cpu())
+        return torch.vstack(feats).float().numpy()
+
 
 # BEiT3
 class BEiT3Model(ExtractionModel):
@@ -216,7 +276,6 @@ class BEiT3Model(ExtractionModel):
         super().load()
         self.model = AutoModel.from_pretrained(
             self.name,
-            device_map="auto",
             dtype=torch.bfloat16 if self.quantized else torch.float32,
             attn_implementation=self.attention_implementation
         ).eval()

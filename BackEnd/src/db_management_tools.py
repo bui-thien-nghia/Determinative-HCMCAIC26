@@ -8,6 +8,9 @@ from qdrant_client import QdrantClient, models
 from .models import *
 
 class DataLoader:
+
+    #TODO: Add payload indexing for faster scrolling
+
     def __init__(self, dataset_dir: str, database_client_url="http://localhost:6333"):
         # Running setup
         self.dataset_dir = Path(dataset_dir)
@@ -213,6 +216,11 @@ class QueryManager:
         for name in names: print(name)
 
 
+    def describe_fields(self, collection_name: str):
+        info = self.database_client.get_collection(collection_name)
+        print(info.payload_schema)
+
+
     def encode_query(self, query: str, return_vectors: list[str] = ["siglip2_dense", "bgem3_dense", "bgem3_sparse"]):
         feat_query: dict[str, list | models.SparseVector | None] = {vect: None for vect in return_vectors}
         if "siglip2_dense" in return_vectors: feat_query["siglip2_dense"] = self.image_text_feature_extractor.run([query], 1).flatten().tolist()
@@ -274,6 +282,33 @@ class QueryManager:
             key=filter_key,
             match=models.MatchValue(value=filter_value)
         )
+
+
+    def get_points(
+        self,
+        collection_name: str,
+        filters: list[models.Condition] = [],
+        with_payload: bool | list[str] = True,
+        with_vectors: bool | list[str] = False
+    ):
+        offset = None
+        points = []
+
+        while True:
+            records, offset = self.database_client.scroll(
+                collection_name,
+                scroll_filter=models.Filter(must=filters),
+                offset=offset,
+                limit=100,
+                with_payload=with_payload,
+                with_vector=with_vectors
+            )
+
+            if offset is None:
+                break
+            points += records
+
+        return points
 
 
     def search(
@@ -381,6 +416,3 @@ class QueryManager:
 
         # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
-
-class PreferenceConfigurator:
-    pass # For future work, after finishing basic database framework
