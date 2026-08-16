@@ -47,9 +47,63 @@ export const api = {
   ],
 
   search: async (query: string, collection: string, modelId: string, topK: number) => {
-    await sleep(350)
-    console.log('MOCK search:', { query, collection, model_id: modelId, top_k: topK })
-    return { results: localSearch(query, topK) }
+    try {
+      const response = await fetch('/api/search/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: query,
+          mode: 'AUTO',
+          collection: collection,
+          model_id: modelId,
+          top_k: topK,
+          language: 'AUTO',
+          filters: {},
+        }),
+      });
+
+      if (!response.ok){
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.results;
+    } catch (error){
+      console.error("Error: ", error);
+      return [];
+    }
+  },
+
+  aggregatedSearch: async(query: string, collection: string, modelId: string, topK: number) => {
+    try {
+      const response = await fetch('/api/aggregatedsearch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: query,
+          mode: 'AUTO',
+          collection: collection,
+          model_id: modelId,
+          top_k: topK,
+          language: 'AUTO',
+          filters: {},
+        }),
+      });
+
+      if (!response.ok){
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.results;
+    } catch (error){
+      console.error("Error: ", error);
+      return [];
+    }
   },
 
   continuousSearch: async (_imgLink: string, _collection: string, _modelId: string) => {

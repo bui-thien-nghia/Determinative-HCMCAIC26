@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from tqdm import tqdm
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 
 class DataLoader:
     def __init__(self, dataset_dir: str, database_client_url="http://localhost:6333"):
@@ -205,6 +205,12 @@ class QueryManager:
 
         self.image_text_feature_extractor.load()
         self.text_text_feature_extractor.load()
+
+
+    def list_collections(self):
+        names = self.database_client.get_collections()
+        print("Currently available collections:")
+        for name in names: print(name)
 
 
     def encode_query(self, query: str, return_vectors: list[str] = ["siglip2_dense", "bgem3_dense", "bgem3_sparse"]):

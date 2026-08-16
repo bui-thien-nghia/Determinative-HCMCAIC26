@@ -4,6 +4,23 @@ import cv2
 import sys
 from PIL import Image
 
+import contextlib
+import tqdm
+
+@contextlib.contextmanager
+def disable_tqdm():
+    orig_init = tqdm.tqdm.__init__
+    
+    def masked_init(self, *args, **kwargs):
+        kwargs['disable'] = True
+        return orig_init(self, *args, **kwargs)
+        
+    tqdm.tqdm.__init__ = masked_init
+    try:
+        yield
+    finally:
+        tqdm.tqdm.__init__ = orig_init
+
 DEVICE_OS = sys.platform.lower()
 
 # Standardized frame
@@ -200,7 +217,7 @@ class BGEM3Model(ExtractionModel):
         if not self.model:
             print(f"[ERROR] Cannot run inference on {self.name}: the model is missing")
             return None
-        feat_dicts = self.model.encode(
+        with disable_tqdm(): feat_dicts = self.model.encode(
             txts,
             batch_size=batch_size,
             return_dense=return_dense,

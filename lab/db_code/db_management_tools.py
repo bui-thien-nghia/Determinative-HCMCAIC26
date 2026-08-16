@@ -47,29 +47,7 @@ class DataLoader:
         )
 
         self.vid_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("vids/**/*.mp4")} # Videos
-        # self.map_paths = [str(path) for path in self.dataset_dir.rglob("maps/**/*.csv")] # Keyframe maps on videos
-        # self.met_paths = [str(path) for path in self.dataset_dir.rglob("mets/**/*.json")] # Metadata
         self.img_paths = [str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")] # Keyframes
-        # self.tran_paths = [str(path) for path in self.dataset_dir.rglob("trans/**/*.txt")] # Transcriptions
-        # self.feat_siglip2_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/siglip2_dense/**/*.npy")]
-        # self.feat_beit3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/beit3_dense/**/*.npy")]
-        # self.feat_bgem3_dense_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_dense/**/*.npy")]
-        # self.feat_bgem3_sparse_token_id_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/token_ids/**/*.npy")]
-        # self.feat_bgem3_sparse_weight_paths = [str(path) for path in self.dataset_dir.rglob("feats/bgem3_sparse/weights/**/*.npy")]
-
-
-#         print(f"""Dataset record:
-# {len(self.vid_paths)} videos
-# {len(self.map_paths)} keyframe maps
-# {len(self.met_paths)} metadata files
-# {len(self.img_paths)} keyframes
-# {len(self.tran_paths)} transcription chunks
-# {len(self.feat_siglip2_dense_paths)} SigLIP2 dense features
-# {len(self.feat_beit3_dense_paths)} BeIT3 dense features
-# {len(self.feat_bgem3_dense_paths)} BGE M3 dense features
-# {len(self.feat_bgem3_sparse_token_id_paths)} BGE M3 sparse token ids
-# {len(self.feat_bgem3_sparse_weight_paths)} BGE M3 sparse weights
-# """)
 
         print(f"""Dataset record:
 {len(self.vid_paths_map)} videos
@@ -229,6 +207,12 @@ class QueryManager:
         self.text_text_feature_extractor.load()
 
 
+    def list_collections(self):
+        names = self.database_client.get_collections()
+        print("Currently available collections:")
+        for name in names: print(name)
+
+
     def encode_query(self, query: str, return_vectors: list[str] = ["siglip2_dense", "bgem3_dense", "bgem3_sparse"]):
         feat_query: dict[str, list | models.SparseVector | None] = {vect: None for vect in return_vectors}
         if "siglip2_dense" in return_vectors: feat_query["siglip2_dense"] = self.image_text_feature_extractor.run([query], 1).flatten().tolist()
@@ -331,6 +315,7 @@ class QueryManager:
         search_limit: int = 100,
         aggregation_neighbor_limit: int = 10,
         aggregation_weight: float = 0.5,
+        temporal_evaluation_weights: list[float] = [0.4, 0.3, 0.3]
     ):
         # Safeguard
         aggregation_neighbor_limit = np.clip(aggregation_neighbor_limit, 0, search_limit)
@@ -385,9 +370,9 @@ class QueryManager:
                     neighbor.vector["bgem3_sparse"].indices,
                     neighbor.vector["bgem3_sparse"].values
                 )
-                query_neighbor_score = (0.4 * siglip2_dense_score +
-                                        0.3 * bgem3_dense_score +
-                                        0.3 * bgem3_sparse_score)
+                query_neighbor_score = (temporal_evaluation_weights[0] * siglip2_dense_score +
+                                        temporal_evaluation_weights[1] * bgem3_dense_score +
+                                        temporal_evaluation_weights[2] * bgem3_sparse_score)
                 temporal_decay = np.exp(-((time_order - neighbor_time_order) ** 2) / (2 * delta ** 2))
                 total_temporal_score += query_neighbor_score * temporal_decay
 
