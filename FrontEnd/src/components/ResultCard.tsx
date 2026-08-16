@@ -4,6 +4,7 @@ import { useStore } from '../store'
 import clsx from 'clsx'
 import { getImageUrl } from '../utils/media'
 import type { SearchResult } from '../store'
+import { getResultCaption } from '../utils/results'
 
 function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargin = '400px') {
   const [isIntersecting, setIntersecting] = useState(false)
@@ -24,7 +25,7 @@ function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargi
 }
 
 export const ResultCard = memo(({ result }: { result: SearchResult }) => {
-  const { currentDataset, currentModel, addToRecheckList, recheckList, setPreviewResult, setSearchResults, setPlayingVideo, addToast, displayMode } = useStore()
+  const { currentDataset, currentModel, addToRecheckList, recheckList, setPreviewResult, setSearchResults, setPlayingVideo, addToast, displayMode, mode, trakeState } = useStore()
 
   const cardRef = useRef<HTMLDivElement>(null)
   const isVisible = useIntersectionObserver(cardRef, '400px') // 400px buffer
@@ -32,8 +33,35 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   const [imgLoaded, setImgLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
 
-  const isRechecked = recheckList.some((r) => r.id === result.id)
-  const imagePath = result.image_path || result.payload?.img_link || ''
+  // ── Mode-aware selection state ───────────────────────────────
+  // KIS/QA: only highlight if the candidate was added IN the current mode
+  const isInCurrentModeList = (mode === 'KIS' || mode === 'QA')
+    ? recheckList.some((r) => r.id === result.id && r.answerType === mode)
+    : false
+
+  // TRAKE: check if this result's video is the selectedVideoId
+  const isTrakeVideo = mode === 'TRAKE' && !!trakeState.selectedVideoId
+    && result.payload.video_id === trakeState.selectedVideoId
+
+  // TRAKE: check if this exact frame is assigned to an event slot
+  const trakeEventLabel = mode === 'TRAKE'
+    ? trakeState.events.find(e =>
+        e.selectedCandidate &&
+        e.selectedCandidate.payload.video_id === result.payload.video_id &&
+        String(e.selectedCandidate.payload.frame_id) === String(result.payload.frame_id)
+      )?.label ?? null
+    : null
+
+  // The generic "isRechecked" (green checkmark on + button) only applies to KIS/QA
+  const isRechecked = isInCurrentModeList
+  const imagePath = result.thumbnailUrl || result.image_path || result.payload?.img_link || ''
+  const imageUrl = getImageUrl(imagePath)
+  const caption = getResultCaption(result)
+
+  useEffect(() => {
+    setImgLoaded(false)
+    setImgError(!imageUrl)
+  }, [imageUrl])
 
   const handleCopyId = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -64,18 +92,20 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
     e.stopPropagation()
     if (isRechecked) return
     try {
+      const mode = useStore.getState().mode
+      const answerType = mode as any
+      
       const item = {
         id: result.id || `${result.payload?.video_id}_${result.payload?.frame_id}_${Date.now()}`,
         img_link: imagePath,
         payload: result.payload,
-        answerType: (useStore.getState().mode === 'AUTO' ? 'KIS' : useStore.getState().mode) as any
+        answerType
       }
-
+      
       const { api } = await import('../api')
       api.addRecheck(item).catch(console.error)
 
-      addToRecheckList(item)
-      addToast('Added to Answer Builder', 'success')
+      useStore.getState().addCandidate(result)
     } catch (err) {
       console.error(err)
       addToast('Add failed', 'error')
@@ -93,7 +123,13 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
       }}
       className={clsx(
         'group flex flex-col bg-slate-800 border rounded-lg overflow-hidden cursor-pointer transition-colors shadow-sm h-full',
-        isRechecked ? 'border-green-500' : 'border-slate-700 hover:border-blue-500 cursor-grab active:cursor-grabbing'
+        // KIS/QA selected candidate
+        isInCurrentModeList ? 'border-green-500' :
+        // TRAKE assigned event frame
+        trakeEventLabel ? 'border-blue-500' :
+        // TRAKE selected video (subtle)
+        isTrakeVideo ? 'border-cyan-700/70' :
+        'border-slate-700 hover:border-blue-500 cursor-grab active:cursor-grabbing'
       )}
     >
       {isVisible ? (
@@ -110,9 +146,9 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                 <span className="text-[10px] uppercase tracking-wider">Image Broken</span>
               </div>
             )}
-            {!imgError && (
+            {imageUrl && !imgError && (
               <img
-                src={getImageUrl(imagePath)}
+                src={imageUrl}
                 alt={`Frame ${result.payload?.frame_id}`}
                 className={clsx(
                   "absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105",
@@ -149,11 +185,16 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                 onClick={handleAddRecheck}
                 className={clsx(
                   'p-1.5 rounded shadow-lg backdrop-blur-sm border transition-colors text-white',
+                  trakeEventLabel ? 'bg-blue-700 border-blue-500' :
                   isRechecked ? 'bg-green-600 border-green-500' : 'bg-blue-600/90 hover:bg-blue-500 border-blue-500'
                 )}
-                title="Add to Answer Builder"
+                title={
+                  mode === 'TRAKE'
+                    ? (trakeState.stage === 1 ? `Select ${result.payload.video_id} as TRAKE video` : `Assign to active event`)
+                    : 'Add to Answer Builder'
+                }
               >
-                {isRechecked ? <CheckCircle size={14} /> : <Plus size={14} />}
+                {trakeEventLabel ? <CheckCircle size={14} /> : isRechecked ? <CheckCircle size={14} /> : <Plus size={14} />}
               </button>
               <button
                 onClick={handlePreview}
@@ -167,6 +208,18 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
             <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-sm text-[10px] font-mono text-white px-2 py-0.5 rounded border border-white/10">
               {(result.score || 0).toFixed(4)}
             </div>
+
+            {/* TRAKE badges — bottom-left of image */}
+            {trakeEventLabel && (
+              <div className="absolute bottom-1.5 left-1.5 bg-blue-600/90 backdrop-blur-sm text-[9px] font-bold uppercase tracking-wider text-white px-1.5 py-0.5 rounded border border-blue-400/50">
+                {trakeEventLabel}
+              </div>
+            )}
+            {isTrakeVideo && !trakeEventLabel && (
+              <div className="absolute bottom-1.5 left-1.5 bg-cyan-900/80 backdrop-blur-sm text-[9px] font-bold uppercase tracking-wider text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-700/60">
+                TRAKE VIDEO
+              </div>
+            )}
           </div>
 
           <div className="p-2 text-[10px] text-slate-400 font-mono flex flex-col gap-1.5 bg-slate-900/50 flex-1">
@@ -202,9 +255,9 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                     {result.payload.people_count}p
                   </span>
                 )}
-                {result.payload?.caption && (
-                  <span className="text-slate-500 text-[8px] italic truncate w-full mt-0.5" title={result.payload.caption}>
-                    {result.payload.caption.slice(0, 60)}{result.payload.caption.length > 60 ? '…' : ''}
+                {caption && (
+                  <span className="text-slate-500 text-[8px] italic truncate w-full mt-0.5" title={caption}>
+                    {caption.slice(0, 60)}{caption.length > 60 ? '…' : ''}
                   </span>
                 )}
               </div>

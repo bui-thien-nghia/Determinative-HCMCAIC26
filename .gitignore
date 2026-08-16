@@ -62,3 +62,13 @@ cache/
 # Existing team data
 /lab/collections/*
 /lab/additional_data/*/*
+
+# Cache
+*.tsbuildinfo
+
+# Local Codex instructions
+/AGENTS.md
+/FrontEnd/AGENTS.md
+
+# Folder AIC26_NO_VIDS
+/AIC26/

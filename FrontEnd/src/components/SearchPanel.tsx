@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Search, Loader2, Image, Type, Mic, FileQuestion, Trash, SlidersHorizontal, Eye, Hash, Settings2, ChevronDown } from 'lucide-react'
 import { useStore } from '../store'
 import { api } from '../api'
@@ -6,6 +6,7 @@ import { api } from '../api'
 export default function SearchPanel() {
   const [query, setQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(true)
+  const searchRequestIdRef = useRef(0)
   const {
     currentDataset, setDataset,
     currentModel, setModel,
@@ -19,8 +20,10 @@ export default function SearchPanel() {
     searchHistory,
     setLastSearch,
     isLoading, setIsLoading,
+    displayMode,
     error, setError,
-    addToast
+    addToast,
+    setSearchStatus
   } = useStore()
 
   const handleSearch = async (e?: React.FormEvent) => {
@@ -30,16 +33,27 @@ export default function SearchPanel() {
 
     if (!queryToSearch) return
 
-    const collection = currentDataset || 'AIC2026_SIGLIP'
-    const modelId = currentModel || 'siglip-so400m'
+    const collection = currentDataset || 'aic2026'
+    const modelId = currentModel || 'siglip2-bgem3'
     const safeTopK = Math.min(100, Math.max(1, Number(topK) || 100))
+
+    const requestId = searchRequestIdRef.current + 1
+    searchRequestIdRef.current = requestId
 
     setIsLoading(true)
     setError(null)
+    setSearchStatus({ state: 'searching', latency: null })
+    const startTime = performance.now()
 
     try {
-      const res = await api.search(queryToSearch, collection, modelId, safeTopK)
-      setSearchResults(res.results || [])
+      const rawResults = displayMode === 'full'
+        ? await api.aggregatedSearch(queryToSearch, collection, modelId, safeTopK)
+        : await api.search(queryToSearch, collection, modelId, safeTopK)
+      if (searchRequestIdRef.current !== requestId) return
+      const results = displayMode === 'full' ? rawResults.slice(0, safeTopK) : rawResults
+      const latency = (performance.now() - startTime) / 1000
+      setSearchStatus({ state: 'success', latency })
+      setSearchResults(results || [])
 
       setLastSearch({
         query: queryToSearch,
@@ -57,17 +71,21 @@ export default function SearchPanel() {
         top_k: safeTopK,
         collection,
         model_id: modelId,
-        results: res.results || [],
+        results: results || [],
         timestamp: Date.now()
       })
-      addToast('Search complete', 'success')
+      addToast(`Search complete: ${results?.length || 0} result(s)`, 'success')
     } catch (err) {
+      if (searchRequestIdRef.current !== requestId) return
       const msg = err instanceof Error ? err.message : 'Search failed'
       console.error(err)
       setError(msg)
-      addToast('Search failed', 'error')
+      setSearchStatus({ state: 'error', latency: null })
+      addToast(msg, 'error')
     } finally {
-      setIsLoading(false)
+      if (searchRequestIdRef.current === requestId) {
+        setIsLoading(false)
+      }
     }
   }
 
@@ -89,7 +107,6 @@ export default function SearchPanel() {
   }
 
   const tabs = [
-    { id: 'AUTO', icon: Image, enabled: true },
     { id: 'KIS', icon: Type, enabled: true },
     { id: 'QA', icon: FileQuestion, enabled: true },
     { id: 'TRAKE', icon: Mic, enabled: true }
@@ -97,7 +114,8 @@ export default function SearchPanel() {
 
   return (
     <div className="flex flex-col h-full bg-slate-900 border-r border-slate-800 text-sm overflow-y-auto custom-scrollbar">
-      <div className="flex p-2 gap-1 border-b border-slate-800 bg-slate-950/50">
+      {/* KIS / QA / TRAKE mode selector */}
+      <div className="flex shrink-0 border-b border-slate-800 bg-slate-950/50">
         {tabs.map(tab => {
           const Icon = tab.icon
           return (
@@ -105,13 +123,13 @@ export default function SearchPanel() {
               key={tab.id}
               onClick={() => tab.enabled && setMode(tab.id)}
               disabled={!tab.enabled}
-              title={!tab.enabled ? 'Not implemented yet' : ''}
-              className={`flex-1 py-2 flex flex-col items-center justify-center gap-1 rounded transition-colors ${
-                !tab.enabled ? 'opacity-30 cursor-not-allowed text-slate-500' :
-                mode === tab.id ? 'bg-blue-600/20 text-blue-400' : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300'
+              title={!tab.enabled ? 'Not implemented yet' : tab.id}
+              className={`flex-1 py-2.5 flex flex-col items-center justify-center gap-1 transition-colors border-b-2 ${
+                !tab.enabled ? 'opacity-30 cursor-not-allowed text-slate-500 border-transparent' :
+                mode === tab.id ? 'bg-blue-600/10 text-blue-400 border-blue-500' : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300 border-transparent'
               }`}
             >
-              <Icon size={16} />
+              <Icon size={14} />
               <span className="text-[10px] font-bold tracking-wider">{tab.id}</span>
             </button>
           )
@@ -131,7 +149,7 @@ export default function SearchPanel() {
               }
             }}
             placeholder="Search images, text, speech..."
-            className="w-full bg-slate-950 text-slate-200 rounded p-3 text-sm border border-slate-800 focus:outline-none focus:border-blue-500 min-h-[100px] resize-y"
+            className="w-full bg-slate-950 text-slate-200 rounded p-3 text-sm border border-slate-800 focus:outline-none focus:border-blue-500 min-h-25 resize-y"
           />
           <div className="text-[9px] text-slate-500 mt-1 text-right">Press Cmd/Ctrl + Enter to search</div>
         </div>
@@ -208,23 +226,16 @@ export default function SearchPanel() {
         <div>
           <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Collection</label>
           <select
-            value={currentDataset || 'AIC2026_SIGLIP'}
+            value={currentDataset || 'aic2026'}
             onChange={(e) => {
               const ds = e.target.value
               setDataset(ds)
-              if (ds === 'AIC2026_SIGLIP') {
-                setModel('siglip-so400m')
-                addToast('Collection changed to AIC2026_SIGLIP', 'info')
-              }
-              if (ds === 'AIC2026') {
-                setModel('clip-vit-b-32')
-                addToast('Collection changed to AIC2026', 'info')
-              }
+              setModel('siglip2-bgem3')
+              addToast(`Collection changed to ${ds}`, 'info')
             }}
             className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500"
           >
-            <option value="AIC2026_SIGLIP">AIC2026_SIGLIP</option>
-            <option value="AIC2026">AIC2026</option>
+            <option value="aic2026">aic2026</option>
           </select>
         </div>
 
@@ -290,7 +301,7 @@ export default function SearchPanel() {
                   className="flex-1 cursor-pointer text-left"
                   onClick={() => handleRestoreHistory(h)}
                 >
-                  <div className="text-xs text-slate-300 font-medium truncate w-[180px]" title={h.query}>{h.query}</div>
+                  <div className="text-xs text-slate-300 font-medium truncate w-45" title={h.query}>{h.query}</div>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-[9px] px-1 py-0.5 bg-slate-800 text-slate-400 rounded uppercase tracking-wider">{h.mode}</span>
                     <span className="text-[9px] text-slate-500">{h.results?.length || 0} res</span>

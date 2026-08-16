@@ -78,7 +78,7 @@ export const api = {
 
   aggregatedSearch: async(query: string, collection: string, modelId: string, topK: number) => {
     try {
-      const response = await fetch('/api/aggregatedsearch', {
+      const response = await fetch('/api/aggregatedsearch/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
