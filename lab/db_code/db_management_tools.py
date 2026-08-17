@@ -8,6 +8,9 @@ from qdrant_client import QdrantClient, models
 from models import *
 
 class DataLoader:
+
+    #TODO: Add payload indexing for faster get_points()
+
     def __init__(self, dataset_dir: str, database_client_url="http://localhost:6333"):
         # Running setup
         self.dataset_dir = Path(dataset_dir)
@@ -208,9 +211,13 @@ class QueryManager:
 
 
     def list_collections(self):
-        names = self.database_client.get_collections()
-        print("Currently available collections:")
-        for name in names: print(name)
+        collections = self.database_client.get_collections().collections
+        return [collection.name for collection in collections]
+
+
+    def describe_fields(self, collection_name: str):
+        info = self.database_client.get_collection(collection_name)
+        return info
 
 
     def encode_query(self, query: str, return_vectors: list[str] = ["siglip2_dense", "bgem3_dense", "bgem3_sparse"]):
@@ -274,6 +281,33 @@ class QueryManager:
             key=filter_key,
             match=models.MatchValue(value=filter_value)
         )
+
+
+    def get_points(
+        self,
+        collection_name: str,
+        filters: list[models.Condition] = [],
+        with_payload: bool | list[str] = True,
+        with_vectors: bool | list[str] = False
+    ):
+        offset = None
+        points = []
+
+        while True:
+            records, offset = self.database_client.scroll(
+                collection_name,
+                scroll_filter=models.Filter(must=filters),
+                offset=offset,
+                limit=100,
+                with_payload=with_payload,
+                with_vector=with_vectors
+            )
+
+            if offset is None:
+                break
+            points += records
+
+        return points
 
 
     def search(
@@ -381,6 +415,3 @@ class QueryManager:
 
         # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
-
-class PreferenceConfigurator:
-    pass # For future work, after finishing basic database framework
