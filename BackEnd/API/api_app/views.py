@@ -51,9 +51,12 @@ def Search(request):
                     "video_id": str(q_payload.get("vid_id", "")),
                     "frame_id": str(q_payload.get("frame_id", "")),
                     "img_link": str(q_payload.get("frame_path", "")),
-                    "timestamp": int(q_payload.get("time_order", 0)),
+                    "timestamp": float(q_payload.get("time_order", 0)),
                     "caption": str(q_payload.get("transcript", "")),
-                    "model": model_id
+                    "model": model_id,
+                    "fps": int(q_payload.get("fps", 0)),
+                    "time_order": float(q_payload.get("time_order", 0)),
+                    "frame_order": int(q_payload.get("frame_order", 0)),
                 }
             }
             formatted_results.append(result_item)
@@ -97,7 +100,10 @@ def AggregatedSearch(request):
                     "img_link": str(q_payload.get("frame_path", "")),
                     "timestamp": int(q_payload.get("time_order", 0)),
                     "caption": str(q_payload.get("transcript", "")),
-                    "model": model_id
+                    "model": model_id,
+                    "fps": int(q_payload.get("fps", 0)),
+                    "time_order": float(q_payload.get("time_order", 0)),
+                    "frame_order": int(q_payload.get("frame_order", 0)),
                 }
             }
             formatted_results.append(result_item)
