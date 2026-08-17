@@ -9,7 +9,7 @@ from .models import *
 
 class DataLoader:
 
-    #TODO: Add payload indexing for faster scrolling
+    #TODO: Add payload indexing for faster get_points()
 
     def __init__(self, dataset_dir: str, database_client_url="http://localhost:6333"):
         # Running setup
@@ -211,9 +211,9 @@ class QueryManager:
 
 
     def list_collections(self):
-        names = self.database_client.get_collections()
+        collections = self.database_client.get_collections().collections
         print("Currently available collections:")
-        for name in names: print(name)
+        return [collection.name for collection in collections]
 
 
     def describe_fields(self, collection_name: str):
