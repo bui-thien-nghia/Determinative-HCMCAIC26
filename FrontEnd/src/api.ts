@@ -106,9 +106,71 @@ export const api = {
     }
   },
 
-  continuousSearch: async (_imgLink: string, _collection: string, _modelId: string) => {
-    await sleep(250)
-    return { results: mockResults.slice(0, 6) }
+  continuousSearch: async (imgLink: string, collection: string) => {
+    try {
+      const response = await fetch('/api/continuoussearch/', {
+        method: "POST",
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          collection: collection,
+          frame_path: imgLink,
+        }),
+      });
+
+      if (!response.ok){
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.results;
+    } catch (error){
+      console.error("Error: ", error);
+      return [];
+    }
+  },
+
+  getCollections: async () => {
+    try {
+      const response = await fetch('/api/collections/', {
+        method: 'GET',
+      });
+
+      if (!response.ok){
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const collections = await response.json();
+      return collections.collections;
+    } catch (error){
+      console.error("Error: ", error);
+      return [];
+    }
+  },
+
+  describeSchema: async (collection: string) => {
+    try {
+      const response = await fetch('/api/describeschema/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          collection: collection,
+        }),
+      });
+
+      if (!response.ok){
+        throw new Error(`HTTP errot! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.schema;
+    } catch (error){
+      console.error("Error: ", error);
+      return [];
+    }
   },
 
   getRecheck: async () => [],

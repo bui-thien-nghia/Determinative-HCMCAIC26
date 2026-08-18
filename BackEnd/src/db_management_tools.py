@@ -4,7 +4,7 @@ import numpy as np
 import uuid
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 from tqdm import tqdm
 
 class DataLoader:
@@ -361,7 +361,7 @@ class QueryManager:
                 offset=offset,
                 limit=100,
                 with_payload=with_payload,
-                with_vector=with_vectors
+                with_vectors=with_vectors
             )
 
             if offset is None:
@@ -476,3 +476,21 @@ class QueryManager:
 
         # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
+
+    def search_on_image(self, collection_name: str, frame_path: str, search_limit: int = 100):
+        image_points = self.get_points(
+            collection_name,
+            filters=[
+                self.create_filter("frame_path", frame_path)
+            ],
+            with_vectors=["siglip2_dense"]
+        )[0]
+
+        result_points = self.search(
+            collection_name,
+            self.create_prefetch(siglip2_dense=image_points.vector["siglip2_dense"], search_limit=search_limit),
+            search_limit=search_limit,
+            using_vectors=["siglip2_dense"]
+        )
+
+        return result_points
