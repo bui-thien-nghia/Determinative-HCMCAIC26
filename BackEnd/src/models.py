@@ -122,7 +122,7 @@ class TransNetV2Model(ExtractionModel):
         frame_id = 0
         for scene in scenes:
             fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_order = scene["start_frame"] + fps // 2
+            frame_order = scene["start_frame"] + int(fps * 0.35)
             time_order = frame_order / fps
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_order)
             ret, frame = cap.read()

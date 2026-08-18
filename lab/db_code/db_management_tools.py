@@ -3,13 +3,12 @@ import pandas as pd
 import numpy as np
 import uuid
 from pathlib import Path
-from tqdm import tqdm
 from qdrant_client import QdrantClient, models
 from models import *
+from tqdm import tqdm
 
 class DataLoader:
 
-    #TODO: Add payload indexing for faster get_points()
 
     def __init__(self, dataset_dir: str, database_client_url="http://localhost:6333"):
         # Running setup
@@ -48,6 +47,50 @@ class DataLoader:
                 always_ram=True
             )
         )
+        self.payload_schema = [ # Only index payloads for filtering
+            {
+                "field_name": "frame_id",
+                "field_schema": models.KeywordIndexParams(
+                    type=models.KeywordIndexType.KEYWORD,
+                    prefix=True,
+                )
+            },
+            {
+                "field_name": "vid_id",
+                "field_schema": models.KeywordIndexParams(
+                    type=models.KeywordIndexType.KEYWORD,
+                    is_tenant=True,
+                    prefix=True
+                )
+            },
+            {
+                "field_name": "frame_order",
+                "field_schema": models.IntegerIndexParams(
+                    type=models.IntegerIndexType.INTEGER,
+                    is_principal=True,
+                    lookup=True,
+                    range=False
+                ),
+            },
+            {
+                "field_name": "time_order",
+                "field_schema": models.FloatIndexParams(
+                    type=models.FloatIndexType.FLOAT,
+                    is_principal=True,
+                )
+            },
+            {
+                "field_name": "transcript",
+                "field_schema": models.TextIndexParams(
+                    type=models.TextIndexType.TEXT,
+                    tokenizer=models.TokenizerType.MULTILINGUAL,
+                    min_token_len=2,
+                    max_token_len=20,
+                    lowercase=True,
+                    phrase_matching=True
+                )
+            }
+        ]
 
         self.vid_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("vids/**/*.mp4")} # Videos
         self.img_paths = [str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")] # Keyframes
@@ -82,6 +125,11 @@ class DataLoader:
             hnsw_config=self.db_hnsw_params,
             quantization_config=self.db_quantization_params
         )
+        for schema in self.payload_schema:
+            self.database_client.create_payload_index(
+                collection_name,
+                **schema
+            )
 
 
     def list_collections(self):
@@ -212,12 +260,25 @@ class QueryManager:
 
     def list_collections(self):
         collections = self.database_client.get_collections().collections
+        print("Currently available collections:")
         return [collection.name for collection in collections]
 
 
-    def describe_fields(self, collection_name: str):
-        info = self.database_client.get_collection(collection_name)
-        return info
+    def describe_schema(self, collection_name: str):
+        indexed_fields = list(self.database_client.get_collection(collection_name).payload_schema.keys())
+        example_point, _ = self.database_client.scroll(
+            collection_name,
+            limit=1,
+        )
+        schema_descriptor = {
+            key: {
+                "data_type": type(value).__name__,
+                "is_indexed": False
+            }
+            for key, value in example_point[0].payload.items()
+        }
+        for field in indexed_fields: schema_descriptor[field]["is_indexed"] = True
+        return schema_descriptor
 
 
     def encode_query(self, query: str, return_vectors: list[str] = ["siglip2_dense", "bgem3_dense", "bgem3_sparse"]):
