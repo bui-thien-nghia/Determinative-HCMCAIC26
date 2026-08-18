@@ -2,8 +2,8 @@ import ipywidgets as widgets
 import pandas as pd
 import numpy as np
 import time
-from tqdm import tqdm
 from db_management_tools import QueryManager
+from tqdm import tqdm
 from pathlib import Path
 from qdrant_client import models
 from IPython.display import display

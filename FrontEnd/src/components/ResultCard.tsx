@@ -120,7 +120,7 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
     if (!currentDataset || !currentModel) return
     try {
       const { api } = await import('../api')
-      const res = await api.continuousSearch(imagePath, currentDataset, currentModel)
+      const res = await api.continuousSearch(imagePath, currentDataset)
       setSearchResults(res.results || [])
       addToast('Similar frames loaded', 'success')
     } catch (err) {

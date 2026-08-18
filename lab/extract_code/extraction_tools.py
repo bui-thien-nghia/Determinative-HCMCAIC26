@@ -1,13 +1,11 @@
 import csv
 import numpy as np
-from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
-
-# Import all models
 from models import *
+from tqdm import tqdm
 
 class KeyframeAndFeatureExtractor:
     def __init__(
@@ -46,7 +44,14 @@ class KeyframeAndFeatureExtractor:
         return imgs, maps, feats_siglip2_dense, feats_beit3_dense
 
 
-    def filter_with_clustering(self, imgs: list, maps: list[dict], feats_siglip2_dense: np.ndarray, feats_beit3_dense: np.ndarray, clustering_similarity_threshold: float = 0.85):
+    def filter_with_clustering(
+        self,
+        imgs: list,
+        maps: list[dict],
+        feats_siglip2_dense: np.ndarray,
+        feats_beit3_dense: np.ndarray,
+        clustering_similarity_threshold: float = 0.9
+    ):
         similarity_matrix = cosine_similarity(feats_siglip2_dense)
         distance_matrix = np.clip(1 - similarity_matrix, 0, 1)
 
@@ -76,6 +81,9 @@ class KeyframeAndFeatureExtractor:
             unique_maps.append(maps[best_idx])
             unique_feats_siglip2_dense.append(feats_siglip2_dense[best_idx])
             unique_feats_beit3_dense.append(feats_beit3_dense[best_idx])
+
+            # Re-index frame_id post-filtering
+            for i in range(len(unique_maps)): unique_maps[i]["frame_id"] = f"{(i + 1):03d}"
         
         return unique_imgs, unique_maps, unique_feats_siglip2_dense, unique_feats_beit3_dense
 
@@ -89,16 +97,16 @@ class KeyframeAndFeatureExtractor:
         csv_list = []
         header = []
         vid_id = ""
-        for idx, (img, map, feat_siglip2_dense, feat_beit3_dense) in enumerate(zip(imgs, maps, feats_siglip2_dense, feats_beit3_dense)):
+        for img, map, feat_siglip2_dense, feat_beit3_dense in zip(imgs, maps, feats_siglip2_dense, feats_beit3_dense):
             vid_id = Path(map["vid_path"]).stem
-            frame_id = f"{(idx + 1):03d}"
+            frame_id = map["frame_id"]
             (self.img_dir / vid_id).mkdir(parents=True, exist_ok=True)
             (self.feat_siglip2_dense_dir / vid_id).mkdir(parents=True, exist_ok=True)
             (self.feat_beit3_dense_dir / vid_id).mkdir(parents=True, exist_ok=True)
 
             img.save(self.img_dir / vid_id / f"{frame_id}.jpg")
             np.save(self.feat_siglip2_dense_dir / vid_id / f"{frame_id}.npy", feat_siglip2_dense)
-            np.save(self.feat_siglip2_dense_dir / vid_id / f"{frame_id}.npy", feat_beit3_dense)
+            np.save(self.feat_beit3_dense_dir / vid_id / f"{frame_id}.npy", feat_beit3_dense)
             map.pop("vid_path", None)
             header = list(map.keys())
             csv_list.append(list(map.values()))
@@ -115,7 +123,7 @@ class KeyframeAndFeatureExtractor:
         perceptive_feature_extraction_batch_size: int = 32,
         fused_feature_extraction_batch_size: int = 128,
         shot_confidence_threshold: float = 0.5,
-        clustering_similarity_threshold: float = 0.85,
+        clustering_similarity_threshold: float = 0.9,
         max_workers: int = 1
     ):
         self.img_dir.mkdir(parents=True, exist_ok=True)
