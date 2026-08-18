@@ -11,9 +11,12 @@ type VideoWithFrameCallback = HTMLVideoElement & {
   requestVideoFrameCallback?: (callback: (now: number, metadata: unknown) => void) => number
 }
 
-const MAX_CAPTURE_CACHE_SIZE = 60
+const MAX_CAPTURE_CACHE_SIZE = 120
+const MAX_CONCURRENT_CAPTURES = 3
 const captureCache = new Map<string, CapturedVideoFrame>()
 const pendingCaptures = new Map<string, Promise<CapturedVideoFrame>>()
+const captureQueue: Array<() => void> = []
+let activeCaptures = 0
 
 function captureKey(videoId: string, timestamp: number) {
   return `${videoId}:${timestamp.toFixed(3)}`
@@ -38,6 +41,12 @@ function getCachedFrame(key: string) {
   captureCache.delete(key)
   captureCache.set(key, cached)
   return cached
+}
+
+export function getCachedVideoFrame(videoId: string, timestamp: number) {
+  const numericTimestamp = Number(timestamp)
+  if (!videoId || !Number.isFinite(numericTimestamp)) return null
+  return getCachedFrame(captureKey(videoId, numericTimestamp))
 }
 
 function waitForEvent(target: EventTarget, eventName: string, timeoutMs = 8000) {
@@ -141,6 +150,29 @@ async function decodeVideoFrame(videoId: string, timestamp: number): Promise<Cap
   return { url, width, height, timestamp: targetTime }
 }
 
+function runNextCapture() {
+  while (activeCaptures < MAX_CONCURRENT_CAPTURES && captureQueue.length > 0) {
+    const next = captureQueue.shift()
+    if (next) next()
+  }
+}
+
+function enqueueDecode(videoId: string, timestamp: number) {
+  return new Promise<CapturedVideoFrame>((resolve, reject) => {
+    captureQueue.push(() => {
+      activeCaptures += 1
+      decodeVideoFrame(videoId, timestamp)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          activeCaptures -= 1
+          runNextCapture()
+        })
+    })
+    runNextCapture()
+  })
+}
+
 export function captureVideoFrame(videoId: string, timestamp: number) {
   const numericTimestamp = Number(timestamp)
   if (!videoId || !Number.isFinite(numericTimestamp)) {
@@ -154,7 +186,7 @@ export function captureVideoFrame(videoId: string, timestamp: number) {
   const pending = pendingCaptures.get(key)
   if (pending) return pending
 
-  const capture = decodeVideoFrame(videoId, numericTimestamp)
+  const capture = enqueueDecode(videoId, numericTimestamp)
     .then((frame) => {
       rememberFrame(key, frame)
       return frame

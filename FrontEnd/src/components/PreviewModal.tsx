@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Type, FileVideo, Copy } from 'lucide-react'
+import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Type, FileVideo, Copy, Loader2 } from 'lucide-react'
 import { useStore, type SearchResult } from '../store'
 import { getImageUrl, getNeighborKeyframes, type NeighborFrame } from '../utils/media'
-import { captureVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
+import { captureVideoFrame, getCachedVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
 import {
   copyText,
   formatSeconds,
@@ -35,7 +35,9 @@ export default function PreviewModal() {
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [qaAnswer, setQaAnswer] = useState('')
   const [capturedFrame, setCapturedFrame] = useState<CapturedVideoFrame | null>(null)
+  const [capturedFrameKey, setCapturedFrameKey] = useState('')
   const [captureState, setCaptureState] = useState<'idle' | 'loading' | 'ready' | 'fallback'>('idle')
+  const [captureStateKey, setCaptureStateKey] = useState('')
 
   const currentIndex = searchResults.findIndex(r => r.id === previewResult?.id)
   const videoId = getResultVideoId(previewResult)
@@ -49,6 +51,9 @@ export default function PreviewModal() {
     : undefined
 
   const currentNeighborKey = useMemo(() => `${videoId}:${frameId}`, [videoId, frameId])
+  const captureKey = useMemo(() => (
+    videoId && Number.isFinite(timestamp) ? `${videoId}:${timestamp.toFixed(3)}` : ''
+  ), [videoId, timestamp])
 
   const goPrevious = () => {
     if (currentIndex > 0) setPreviewResult(searchResults[currentIndex - 1])
@@ -178,9 +183,19 @@ export default function PreviewModal() {
   useEffect(() => {
     let cancelled = false
     setCapturedFrame(null)
+    setCapturedFrameKey(captureKey)
+    setCaptureStateKey(captureKey)
 
-    if (!previewResult || !videoId || !Number.isFinite(timestamp)) {
+    if (!previewResult || !videoId || !Number.isFinite(timestamp) || !captureKey) {
       setCaptureState('fallback')
+      return
+    }
+
+    const cachedFrame = getCachedVideoFrame(videoId, timestamp)
+    if (cachedFrame) {
+      setCapturedFrame(cachedFrame)
+      setCapturedFrameKey(captureKey)
+      setCaptureState('ready')
       return
     }
 
@@ -189,18 +204,28 @@ export default function PreviewModal() {
       .then((frame) => {
         if (cancelled) return
         setCapturedFrame(frame)
+        setCapturedFrameKey(captureKey)
         setCaptureState('ready')
+        if (import.meta.env.DEV) {
+          console.debug({
+            videoId,
+            frameId,
+            timestamp,
+            previewSource: 'video-frame',
+          })
+        }
       })
       .catch(() => {
         if (cancelled) return
         setCapturedFrame(null)
+        setCapturedFrameKey(captureKey)
         setCaptureState('fallback')
       })
 
     return () => {
       cancelled = true
     }
-  }, [previewResult?.id, videoId, timestamp])
+  }, [previewResult?.id, videoId, frameId, timestamp, captureKey])
 
   if (!previewResult) return null
 
@@ -212,12 +237,20 @@ export default function PreviewModal() {
   ]
 
   const imageUrl = getImageUrl(imagePath)
-  const previewImageUrl = capturedFrame?.url || imageUrl
+  const cachedFrame = captureKey ? getCachedVideoFrame(videoId, timestamp) : null
+  const activeCapturedFrame = capturedFrameKey === captureKey ? capturedFrame : null
+  const exactFrame = activeCapturedFrame || cachedFrame
+  const isCaptureStateCurrent = captureStateKey === captureKey
+  const effectiveCaptureState = exactFrame
+    ? 'ready'
+    : isCaptureStateCurrent && captureState === 'fallback'
+      ? 'fallback'
+      : 'loading'
   const modelName = typeof previewResult.payload.model === 'string' ? previewResult.payload.model : ''
   const ocrText = typeof previewResult.payload.ocr === 'string' ? previewResult.payload.ocr.trim() : ''
-  const previewSourceLabel = captureState === 'ready'
-    ? `Video frame @ ${formatSeconds(capturedFrame?.timestamp ?? timestamp)}`
-    : captureState === 'loading'
+  const previewSourceLabel = effectiveCaptureState === 'ready'
+    ? `Video frame @ ${formatSeconds(exactFrame?.timestamp ?? timestamp)}`
+    : effectiveCaptureState === 'loading'
       ? 'Loading exact video frame...'
       : 'Stored keyframe fallback'
 
@@ -264,16 +297,27 @@ export default function PreviewModal() {
             </button>
           </div>
           <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded border border-white/10 text-xs font-mono z-10 shadow-lg">
-            {captureState === 'ready'
-              ? `VIDEO FRAME • ${formatSeconds(capturedFrame?.timestamp ?? timestamp)}`
+            {effectiveCaptureState === 'ready'
+              ? `VIDEO FRAME • ${formatSeconds(exactFrame?.timestamp ?? timestamp)}`
               : previewSourceLabel}
           </div>
-          {previewImageUrl ? (
+          {effectiveCaptureState === 'ready' && exactFrame ? (
             <img
-              src={previewImageUrl}
+              src={exactFrame.url}
               alt="Preview"
               className="w-full h-full object-contain"
             />
+          ) : effectiveCaptureState === 'fallback' && imageUrl ? (
+            <img
+              src={imageUrl}
+              alt="Stored keyframe fallback"
+              className="w-full h-full object-contain"
+            />
+          ) : effectiveCaptureState === 'loading' ? (
+            <div className="w-[min(78%,900px)] aspect-video rounded-lg border border-slate-800 bg-slate-950/80 flex flex-col items-center justify-center gap-3 text-slate-400">
+              <Loader2 size={28} className="animate-spin text-blue-400" />
+              <span className="text-sm font-mono">Loading video frame @ {formatSeconds(timestamp)}...</span>
+            </div>
           ) : (
             <div className="text-slate-500 flex flex-col items-center gap-2">
               <ImageIcon size={32} />

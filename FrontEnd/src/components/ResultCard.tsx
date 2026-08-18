@@ -4,7 +4,8 @@ import { useStore } from '../store'
 import clsx from 'clsx'
 import { getImageUrl } from '../utils/media'
 import type { SearchResult } from '../store'
-import { getResultCaption } from '../utils/results'
+import { getResultCaption, getResultTimestamp, getResultVideoId } from '../utils/results'
+import { captureVideoFrame, getCachedVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
 
 function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargin = '400px') {
   const [isIntersecting, setIntersecting] = useState(false)
@@ -28,10 +29,12 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   const { currentDataset, currentModel, addToRecheckList, recheckList, setPreviewResult, setSearchResults, setPlayingVideo, addToast, displayMode, mode, trakeState } = useStore()
 
   const cardRef = useRef<HTMLDivElement>(null)
-  const isVisible = useIntersectionObserver(cardRef, '400px') // 400px buffer
+  const isVisible = useIntersectionObserver(cardRef, '320px')
   
   const [imgLoaded, setImgLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
+  const [exactFrame, setExactFrame] = useState<CapturedVideoFrame | null>(null)
+  const [exactFrameKey, setExactFrameKey] = useState('')
 
   // ── Mode-aware selection state ───────────────────────────────
   // KIS/QA: only highlight if the candidate was added IN the current mode
@@ -55,13 +58,51 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   // The generic "isRechecked" (green checkmark on + button) only applies to KIS/QA
   const isRechecked = isInCurrentModeList
   const imagePath = result.thumbnailUrl || result.image_path || result.payload?.img_link || ''
-  const imageUrl = getImageUrl(imagePath)
+  const keyframeImageUrl = getImageUrl(imagePath)
+  const videoId = getResultVideoId(result)
+  const timestamp = getResultTimestamp(result)
+  const captureKey = videoId && Number.isFinite(timestamp) ? `${videoId}:${timestamp.toFixed(3)}` : ''
+  const exactFrameUrl = exactFrameKey === captureKey ? exactFrame?.url : null
+  const imageUrl = exactFrameUrl || keyframeImageUrl
   const caption = getResultCaption(result)
 
   useEffect(() => {
     setImgLoaded(false)
     setImgError(!imageUrl)
   }, [imageUrl])
+
+  useEffect(() => {
+    let cancelled = false
+    setExactFrame(null)
+    setExactFrameKey(captureKey)
+
+    if (!captureKey || !videoId || !Number.isFinite(timestamp)) return
+
+    const cached = getCachedVideoFrame(videoId, timestamp)
+    if (cached) {
+      setExactFrame(cached)
+      setExactFrameKey(captureKey)
+      return
+    }
+
+    if (!isVisible) return
+
+    captureVideoFrame(videoId, timestamp)
+      .then((frame) => {
+        if (cancelled) return
+        setExactFrame(frame)
+        setExactFrameKey(captureKey)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setExactFrame(null)
+        setExactFrameKey(captureKey)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [captureKey, isVisible, videoId, timestamp])
 
   const handleCopyId = (e: React.MouseEvent) => {
     e.stopPropagation()
