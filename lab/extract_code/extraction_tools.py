@@ -121,7 +121,7 @@ class KeyframeAndFeatureExtractor:
         self,
         vid_paths: list[str],
         perceptive_feature_extraction_batch_size: int = 32,
-        fused_feature_extraction_batch_size: int = 128,
+        fused_feature_extraction_batch_size: int = 32,
         shot_confidence_threshold: float = 0.5,
         clustering_similarity_threshold: float = 0.9,
         max_workers: int = 1

@@ -410,7 +410,7 @@ class QueryManager:
         search_limit: int = 100,
         aggregation_neighbor_limit: int = 10,
         aggregation_weight: float = 0.5,
-        temporal_evaluation_weights: list[float] = [0.4, 0.3, 0.3]
+        temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2]
     ):
         # Safeguard
         aggregation_neighbor_limit = np.clip(aggregation_neighbor_limit, 0, search_limit)

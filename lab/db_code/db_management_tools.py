@@ -361,7 +361,7 @@ class QueryManager:
                 offset=offset,
                 limit=100,
                 with_payload=with_payload,
-                with_vector=with_vectors
+                with_vectors=with_vectors
             )
 
             if offset is None:
@@ -410,7 +410,7 @@ class QueryManager:
         search_limit: int = 100,
         aggregation_neighbor_limit: int = 10,
         aggregation_weight: float = 0.5,
-        temporal_evaluation_weights: list[float] = [0.4, 0.3, 0.3]
+        temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2]
     ):
         # Safeguard
         aggregation_neighbor_limit = np.clip(aggregation_neighbor_limit, 0, search_limit)
@@ -476,3 +476,21 @@ class QueryManager:
 
         # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
+
+    def search_on_image(self, collection_name: str, frame_path: str, search_limit: int = 100):
+        image_points = self.get_points(
+            collection_name,
+            filters=[
+                self.create_filter("frame_path", frame_path)
+            ],
+            with_vectors=["siglip2_dense"]
+        )[0]
+
+        result_points = self.search(
+            collection_name,
+            self.create_prefetch(siglip2_dense=image_points.vector["siglip2_dense"], search_limit=search_limit),
+            search_limit=search_limit,
+            using_vectors=["siglip2_dense"]
+        )
+
+        return result_points
