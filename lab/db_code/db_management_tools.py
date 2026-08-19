@@ -336,18 +336,22 @@ class QueryManager:
         return prefetch
 
 
-    def create_filter(self, filter_key: str, filter_value: str):
+    def create_filter(self, key: str, value):
         return models.FieldCondition(
-            key=filter_key,
-            match=models.MatchValue(value=filter_value)
+            key=key,
+            match=models.MatchText(text=value)
         )
+
+
+    def create_filters(self, **kwargs):
+        return [self.create_filter(key, value) for key, value in kwargs.items() if value]
 
 
     def get_points(
         self,
         collection_name: str,
         filters: list[models.Condition] = [],
-        pagination_limit: int = 100,
+        pagination_limit: int = 1000,
         with_payload: bool | list[str] = True,
         with_vectors: bool | list[str] = False
     ):
@@ -363,10 +367,10 @@ class QueryManager:
                 with_payload=with_payload,
                 with_vectors=with_vectors
             )
-
+            points.extend(records)
+            
             if offset is None:
                 break
-            points += records
 
         return points
 
@@ -481,7 +485,7 @@ class QueryManager:
             batch_requests.append(models.QueryRequest(
                 prefetch=prefetch,
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
-                filter=models.Filter(must=[self.create_filter("vid_id", vid_id)]),
+                filter=models.Filter(must=self.create_filters(vid_id=vid_id)),
                 params=self.search_params,
                 limit=aggregation_neighbor_limit+1,
                 with_vector=["siglip2_dense", "beit3_dense", "bgem3_dense", "bgem3_sparse"],
@@ -525,18 +529,18 @@ class QueryManager:
         return sorted(points, key=lambda x: x.score, reverse=True)
 
     #! TO BE REMOVED FROM THIS CLASS
-    def search_on_image(self, collection_name: str, frame_path: str, search_limit: int = 100):
-        image_points = self.get_points(
+    def search_on_image(self, collection_name: str, vid_id: str, frame_id: str, search_limit: int = 100):
+        image_point = self.get_points(
             collection_name,
-            filters=[
-                self.create_filter("frame_path", frame_path)
-            ],
+            filters=self.create_filters(vid_id=vid_id, frame_id=frame_id),
             with_vectors=["siglip2_dense"]
-        )[0]
+        )
+        if not len(image_point): return []
+        image_point = image_point[0]
 
         result_points = self.search(
             collection_name,
-            self.create_prefetch(siglip2_dense=image_points.vector["siglip2_dense"], search_limit=search_limit),
+            query=self.create_prefetch(siglip2_dense=image_point.vector["siglip2_dense"], search_limit=search_limit),
             search_limit=search_limit,
             using_vectors=["siglip2_dense"]
         )
@@ -545,8 +549,9 @@ class QueryManager:
 
 
     #! TO BE REMOVED FROM THIS CLASS
-    def do_filter(self, collection_name: str, key: str, value):
+    def do_filter(self, collection_name: str, key: str, value, pagination_limit: int = 1000):
         return self.get_points(
             collection_name,
-            filters=[self.create_filter(key, value)]
+            filters=self.create_filters(**{key: value}),
+            pagination_limit=pagination_limit
         )

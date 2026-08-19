@@ -336,7 +336,7 @@ class QueryManager:
         return prefetch
 
 
-    def create_filter(self, filter_key: str, filter_value: str):
+    def create_filter(self, filter_key: str, filter_value):
         return models.FieldCondition(
             key=filter_key,
             match=models.MatchValue(value=filter_value)
