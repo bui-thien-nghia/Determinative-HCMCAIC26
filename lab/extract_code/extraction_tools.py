@@ -326,3 +326,61 @@ class TranscriptAndFeatureProcessor:
                 total=len(vid_paths),
                 desc="Extracting transcripts from video"
             ): pass
+
+
+class FeatureCompactor:
+    def __init__(self, feats_dir, save_dir):
+        self.feats_dir = Path(feats_dir)
+        self.save_dir = Path(save_dir)
+
+
+    def compact_and_save_features(self, max_workers: int = 1):
+        feats_siglip2_dense_paths = [str(path) for path in self.feats_dir.rglob("siglip2_dense/**/*.npy")]
+        feats_beit3_dense_paths = [str(path) for path in self.feats_dir.rglob("beit3_dense/**/*.npy")]
+        feats_bgem3_dense_paths = [str(path) for path in self.feats_dir.rglob("bgem3_dense/**/*.npy")]
+        feats_bgem3_sparse_token_ids_paths = [str(path) for path in self.feats_dir.rglob("bgem3_sparse/token_ids/**/*.npy")]
+        feats_bgem3_sparse_weights_paths = [str(path) for path in self.feats_dir.rglob("bgem3_sparse/weights/**/*.npy")]
+
+        all_ls_len = [
+            len(feats_siglip2_dense_paths),
+            len(feats_beit3_dense_paths),
+            len(feats_bgem3_dense_paths),
+            len(feats_bgem3_sparse_token_ids_paths),
+            len(feats_bgem3_sparse_weights_paths)
+        ]
+
+        if len(set(all_ls_len)) != 1:
+            print(f"Lists' lengths mismatched. Compaction cancelled. Lengths of all lists are: {all_ls_len}")
+
+        def load_and_save_single_npz(            
+            feat_siglip2_dense_path,
+            feat_beit3_dense_path,
+            feat_bgem3_dense_path,
+            feat_bgem3_sparse_token_ids_path,
+            feat_bgem3_sparse_weights_path
+        ):
+            vid_id = Path(feat_siglip2_dense_path).parts[-2]
+            frame_id = Path(feat_siglip2_dense_path).stem
+            Path(self.save_dir / vid_id).mkdir(parents=True, exist_ok=True)
+            np.savez(
+                str(Path(self.save_dir / vid_id / f"{frame_id}.npz")),
+                feat_siglip2_dense=np.load(feat_siglip2_dense_path),
+                feat_beit3_dense=np.load(feat_beit3_dense_path),
+                feat_bgem3_dense=np.load(feat_bgem3_dense_path),
+                feat_bgem3_sparse_token_ids=np.load(feat_bgem3_sparse_token_ids_path),
+                feat_bgem3_sparse_weights=np.load(feat_bgem3_sparse_weights_path),
+            )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for _ in tqdm(
+                executor.map(
+                    load_and_save_single_npz,
+                    feats_siglip2_dense_paths,
+                    feats_beit3_dense_paths,
+                    feats_bgem3_dense_paths,
+                    feats_bgem3_sparse_token_ids_paths,
+                    feats_bgem3_sparse_weights_paths
+                ),
+                total=len(feats_siglip2_dense_paths),
+                desc="Compacting features"
+            ): pass

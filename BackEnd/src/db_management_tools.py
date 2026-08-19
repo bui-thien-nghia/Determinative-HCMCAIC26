@@ -174,31 +174,23 @@ class DataLoader:
             frame_id = Path(frame_path).stem
 
             tran_path = self.dataset_dir / "trans" / vid_id / f"{frame_id}.txt"
-            feat_siglip2_dense_path = self.dataset_dir / "feats" / "siglip2_dense" / vid_id / f"{frame_id}.npy"
-            feat_beit3_dense_path = self.dataset_dir / "feats" / "beit3_dense" / vid_id / f"{frame_id}.npy"
-            feat_bgem3_dense_path = self.dataset_dir / "feats" / "bgem3_dense" / vid_id / f"{frame_id}.npy"
-            feat_bgem3_sparse_token_ids_path = self.dataset_dir / "feats" / "bgem3_sparse" / "token_ids" / vid_id / f"{frame_id}.npy"
-            feat_bgem3_sparse_weights_path = self.dataset_dir / "feats" / "bgem3_sparse" / "weights" / vid_id / f"{frame_id}.npy"
+            feats_path = self.dataset_dir / "feats" / vid_id / f"{frame_id}.npz"
 
             # Fetch unloaded data
             with open(tran_path, 'r', encoding="utf-8") as f:
                 tran = f.read()
-            feat_siglip2_dense = np.load(feat_siglip2_dense_path).tolist()
-            feat_beit3_dense = np.load(feat_beit3_dense_path).tolist()
-            feat_bgem3_dense = np.load(feat_bgem3_dense_path).tolist()
-            feat_bgem3_sparse_token_ids = np.load(feat_bgem3_sparse_token_ids_path).tolist()
-            feat_bgem3_sparse_weights = np.load(feat_bgem3_sparse_weights_path).tolist()
+            feats = np.load(feats_path)
 
             # Point format
             yield models.PointStruct(
                 id=str(uuid.uuid4()),
                 vector={
-                    "siglip2_dense": feat_siglip2_dense,
-                    "beit3_dense": feat_beit3_dense,
-                    "bgem3_dense": feat_bgem3_dense,
+                    "siglip2_dense": feats["feat_siglip2_dense"].tolist(),
+                    "beit3_dense": feats["feat_beit3_dense"].tolist(),
+                    "bgem3_dense": feats["feat_bgem3_dense"].tolist(),
                     "bgem3_sparse": models.SparseVector(
-                        indices=feat_bgem3_sparse_token_ids,
-                        values=feat_bgem3_sparse_weights
+                        indices=feats["feat_bgem3_sparse_token_ids"].tolist(),
+                        values=feats["feat_bgem3_sparse_weights"].tolist()
                     )
                 },
                 payload={
