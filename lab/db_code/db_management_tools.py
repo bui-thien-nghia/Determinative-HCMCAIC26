@@ -8,7 +8,7 @@ from models import *
 from tqdm import tqdm
 
 class DataLoader:
-    def __init__(self, dataset_dir: str, database_client_url="http://localhost:6334"):
+    def __init__(self, dataset_dir: str, database_client_url: str = "http://localhost:6334", vid_dir: str = "vids"):
         # Running setup
         self.dataset_dir = Path(dataset_dir)
         self.database_client = QdrantClient(url=database_client_url, prefer_grpc=True)
@@ -90,13 +90,41 @@ class DataLoader:
             }
         ]
 
-        self.vid_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("vids/**/*.mp4")} # Videos
+        self.map_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("maps/**/*.csv")} # Maps
         self.img_paths = [str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")] # Keyframes
+        self.frame_info_map = {}
+        self.build_frame_info_map(vid_dir)
 
         print(f"""Dataset record:
-{len(self.vid_paths_map)} videos
+{len(self.map_paths_map)} videos
 {len(self.img_paths)} keyframes
 """)
+
+
+    def build_frame_info_map(self, vid_dir: str = "vids"):
+        for vid_id in self.map_paths_map.keys():
+            met_path = self.dataset_dir / "mets" / f"{vid_id}.json"
+            map_path = self.dataset_dir / "maps" / f"{vid_id}.csv"
+            vid_path = str(Path(vid_dir) / f"{vid_id}.mp4")
+
+            map = pd.read_csv(map_path)
+            with open(met_path, 'r', encoding='utf-8') as f:
+                met = json.load(f)
+                base_yt_link = met["watch_url"]
+            for row in map.to_dict(orient="records"):
+                frame_id = f"{row["frame_id"]:03d}"
+                frame_order = int(row["frame_order"])
+                time_order = float(row["time_order"])
+                fps = float(row["fps"])
+                yt_link = base_yt_link + f"&t={time_order}s"
+
+                self.frame_info_map[(vid_id, frame_id)] = {
+                    "frame_order": frame_order,
+                    "time_order": time_order,
+                    "fps": fps,
+                    "vid_path": vid_path,
+                    "yt_link": yt_link
+                }
 
 
     def create_new_collection(self, collection_name: str):
@@ -138,20 +166,13 @@ class DataLoader:
 
     def delete_collection(self, collection_name):
         self.database_client.delete_collection(collection_name)
-    
 
-    def form_points(self, indices):
-        points = []
-        if indices == []: indices = range(len(self.img_paths))
 
-        for i in indices:
-            frame_path = self.img_paths[i]
+    def points_generator(self):
+        for frame_path in self.img_paths:
             vid_id = Path(frame_path).parts[-2]
             frame_id = Path(frame_path).stem
-            vid_path = self.vid_paths_map[vid_id]
 
-            met_path = self.dataset_dir / "mets" / f"{vid_id}.json"
-            map_path = self.dataset_dir / "maps" / f"{vid_id}.csv"
             tran_path = self.dataset_dir / "trans" / vid_id / f"{frame_id}.txt"
             feat_siglip2_dense_path = self.dataset_dir / "feats" / "siglip2_dense" / vid_id / f"{frame_id}.npy"
             feat_beit3_dense_path = self.dataset_dir / "feats" / "beit3_dense" / vid_id / f"{frame_id}.npy"
@@ -160,17 +181,8 @@ class DataLoader:
             feat_bgem3_sparse_weights_path = self.dataset_dir / "feats" / "bgem3_sparse" / "weights" / vid_id / f"{frame_id}.npy"
 
             # Fetch unloaded data
-            img_map = pd.read_csv(map_path, skiprows=range(1, int(frame_id)), nrows=1).iloc[0].tolist()
-            try:
-                frame_order, time_order, fps = img_map
-            except Exception:
-                frame_order, time_order, fps = img_map[1:]
-            frame_order = int(frame_order)
             with open(tran_path, 'r', encoding="utf-8") as f:
                 tran = f.read()
-            with open(met_path, 'r', encoding='utf-8') as f:
-                met = json.load(f)
-                yt_link = met["watch_url"] + f"&t={time_order}s"
             feat_siglip2_dense = np.load(feat_siglip2_dense_path).tolist()
             feat_beit3_dense = np.load(feat_beit3_dense_path).tolist()
             feat_bgem3_dense = np.load(feat_bgem3_dense_path).tolist()
@@ -178,7 +190,7 @@ class DataLoader:
             feat_bgem3_sparse_weights = np.load(feat_bgem3_sparse_weights_path).tolist()
 
             # Point format
-            point = models.PointStruct(
+            yield models.PointStruct(
                 id=str(uuid.uuid4()),
                 vector={
                     "siglip2_dense": feat_siglip2_dense,
@@ -191,32 +203,21 @@ class DataLoader:
                 },
                 payload={
                     "frame_path": frame_path,
-                    "vid_path": vid_path,
                     "frame_id": frame_id,
                     "vid_id": vid_id,
-                    "frame_order": frame_order,
-                    "time_order": time_order,
-                    "fps": fps,
-                    "yt_link": yt_link,
-                    "transcript": tran
+                    "transcript": tran,
+                    **self.frame_info_map[(vid_id, frame_id)]
                 }
             )
-            points.append(point)
-
-        return points
 
 
     def upsert_to_db(self, collection_name: str, batch_size: int = 256, num_workers: int = 1):
-        points_count = len(self.img_paths)
-        for i in tqdm(range(0, points_count, batch_size)):
-            j = i + batch_size if i + batch_size < points_count else points_count
-            points = self.form_points(range(i, j))
-            self.database_client.upload_points(
-                collection_name=collection_name,
-                points=points,
-                batch_size=256,
-                parallel=num_workers,
-            )
+        self.database_client.upload_points(
+            collection_name=collection_name,
+            points=tqdm(self.points_generator(), total=len(self.img_paths), desc="Uploading dataset to Qdrant"),
+            batch_size=batch_size,
+            parallel=num_workers,
+        )
 
 
     def create_and_fill_database(
