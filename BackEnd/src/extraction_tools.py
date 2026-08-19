@@ -67,39 +67,46 @@ class KeyframeAndFeatureExtractor:
         unique_imgs, unique_maps, unique_feats_siglip2_dense, unique_feats_beit3_dense = [], [], [], []
         n_clusters = len(np.unique(cluster_labels))
 
+        best_idxes = []
         for cluster_id in range(n_clusters):
-            idxs = np.where(cluster_labels == cluster_id)[0]
-            best_idx = idxs[0]
+            idxes = np.where(cluster_labels == cluster_id)[0]
+            best_idx = idxes[0]
 
-            if len(idxs) > 1:
-                cluster_feats = feats_siglip2_dense[idxs]
+            if len(idxes) > 1:
+                cluster_feats = feats_siglip2_dense[idxes]
                 cluster_centroid = np.mean(cluster_feats, axis=0)
                 centroid_similarities = cosine_similarity(cluster_feats, cluster_centroid.reshape(1, -1))
-                best_idx = idxs[np.argmax(centroid_similarities)]
+                best_idx = idxes[np.argmax(centroid_similarities)]
 
+            best_idxes.append(best_idx)
+
+        best_idxes = sorted(best_idxes)
+        for i, best_idx in enumerate(best_idxes):
             unique_imgs.append(imgs[best_idx])
-            unique_maps.append(maps[best_idx])
             unique_feats_siglip2_dense.append(feats_siglip2_dense[best_idx])
             unique_feats_beit3_dense.append(feats_beit3_dense[best_idx])
 
-            # Re-index frame_id post-filtering
-            for i in range(len(unique_maps)): unique_maps[i]["frame_id"] = f"{(i + 1):03d}"
-        
+            new_map = maps[best_idx]
+            new_map["frame_id"] = f"{(i + 1):03d}"
+            unique_maps.append(maps[best_idx])
+
         return unique_imgs, unique_maps, unique_feats_siglip2_dense, unique_feats_beit3_dense
 
 
-    def save_images_and_features(self, imgs: list, maps: list[dict], feats_siglip2_dense: np.ndarray, feats_beit3_dense: np.ndarray):
-        imgs = [img for img, _ in sorted(list(zip(imgs, maps)), key=lambda x: x[1]["frame_order"])]
-        feats_siglip2_dense = [feat for feat, _ in sorted(list(zip(feats_siglip2_dense, maps)), key=lambda x: x[1]["frame_order"])]
-        feats_beit3_dense = [feat for feat, _ in sorted(list(zip(feats_beit3_dense, maps)), key=lambda x: x[1]["frame_order"])]
-        maps = sorted(maps, key=lambda x: x["frame_order"])
-
+    def save_images_and_features(
+        self,
+        imgs: list,
+        maps: list[dict],
+        feats_siglip2_dense: np.ndarray,
+        feats_beit3_dense: np.ndarray
+    ):
         csv_list = []
         header = []
         vid_id = ""
         for img, map, feat_siglip2_dense, feat_beit3_dense in zip(imgs, maps, feats_siglip2_dense, feats_beit3_dense):
             vid_id = Path(map["vid_path"]).stem
             frame_id = map["frame_id"]
+
             (self.img_dir / vid_id).mkdir(parents=True, exist_ok=True)
             (self.feat_siglip2_dense_dir / vid_id).mkdir(parents=True, exist_ok=True)
             (self.feat_beit3_dense_dir / vid_id).mkdir(parents=True, exist_ok=True)
@@ -193,7 +200,7 @@ class TranscriptAndFeatureProcessor:
         for word in tran_words:
             e = word['end_time']
             selected.append(word['text'])
-            if word['text'] and word['text'][-1] in [',', '.']:
+            if word['text'] and word['text'][-1] in [',', '.', '?', '!', ';']:
                 sentence = ' '.join(selected)
                 tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
                 selected = []
@@ -219,9 +226,9 @@ class TranscriptAndFeatureProcessor:
             for idx, row in enumerate(reader):
                 time_order = float(row["time_order"])
                 try:
-                    frame_id = int(row["frame_id"])
+                    frame_id = row["frame_id"]
                 except Exception:
-                    frame_id = idx + 1
+                    frame_id = f"{(idx + 1):03d}"
                 lower_bound = time_order - max_time_distance
                 upper_bound = time_order + max_time_distance
 
@@ -230,7 +237,7 @@ class TranscriptAndFeatureProcessor:
                     if sentence['start_time'] >= lower_bound
                     and sentence['end_time'] <= upper_bound
                 ]
-                tran_map[f'{vid_id}_{frame_id:03d}'] = ' '.join(selected)
+                tran_map[(vid_id, frame_id)] = ' '.join(selected)
 
         return tran_map
 
@@ -256,8 +263,7 @@ class TranscriptAndFeatureProcessor:
 
     def save_transcripts_and_features(self, tran_map: dict, feats: list):
         vid_id = ""
-        for code, tran, feat_dense, feat_sparse, _ in zip(tran_map.keys(), tran_map.values(), *feats):
-            vid_id, frame_id = code.rsplit('_', 1)
+        for (vid_id, frame_id), tran, feat_dense, feat_sparse, _ in zip(tran_map.keys(), tran_map.values(), *feats):
             (self.tran_dir / vid_id).mkdir(parents=True, exist_ok=True)
             (self.feat_dir_dense / vid_id).mkdir(parents=True, exist_ok=True)
             (self.feat_dir_sparse_token_ids / vid_id).mkdir(parents=True, exist_ok=True)

@@ -8,12 +8,10 @@ from models import *
 from tqdm import tqdm
 
 class DataLoader:
-
-
-    def __init__(self, dataset_dir: str, database_client_url="http://localhost:6333"):
+    def __init__(self, dataset_dir: str, database_client_url="http://localhost:6334"):
         # Running setup
         self.dataset_dir = Path(dataset_dir)
-        self.database_client = QdrantClient(url=database_client_url)
+        self.database_client = QdrantClient(url=database_client_url, prefer_grpc=True)
 
         # Schema
         self.feat_siglip2_dense_params = models.VectorParams(
@@ -167,6 +165,7 @@ class DataLoader:
                 frame_order, time_order, fps = img_map
             except Exception:
                 frame_order, time_order, fps = img_map[1:]
+            frame_order = int(frame_order)
             with open(tran_path, 'r', encoding="utf-8") as f:
                 tran = f.read()
             with open(met_path, 'r', encoding='utf-8') as f:
@@ -348,6 +347,7 @@ class QueryManager:
         self,
         collection_name: str,
         filters: list[models.Condition] = [],
+        pagination_limit: int = 100,
         with_payload: bool | list[str] = True,
         with_vectors: bool | list[str] = False
     ):
@@ -359,7 +359,7 @@ class QueryManager:
                 collection_name,
                 scroll_filter=models.Filter(must=filters),
                 offset=offset,
-                limit=100,
+                limit=pagination_limit,
                 with_payload=with_payload,
                 with_vectors=with_vectors
             )
@@ -380,11 +380,11 @@ class QueryManager:
         return_vectors: list[str] | bool = False,
         return_payloads: list[str] | bool = True,
         filter: list[models.Condition] = []
-    ): # Filter is implemented inside search as well
-        if not using_vectors and not filter:
-            raise ValueError("Cannot search without vector or filter condition")
+    ):
+        if not using_vectors:
+            raise ValueError("Cannot search without vector")
 
-        if type(query) == str:
+        if isinstance(query, str):
             feat_query = self.encode_query(query, return_vectors=using_vectors)
             prefetch = self.create_prefetch(**feat_query, search_limit=search_limit)
         else:
@@ -403,6 +403,44 @@ class QueryManager:
         return points
 
 
+    def batch_search(
+        self,
+        collection_name: str,
+        queries: list[str | list[models.Prefetch] | models.QueryRequest],
+        search_limit: int = 100,
+        using_vectors: list[str] = ["siglip2_dense", "bgem3_dense", "bgem3_sparse"],
+        return_vectors: list[str] | bool = False,
+        return_payloads: list[str] | bool = True,
+        filter: list[models.Condition] = []
+    ):
+        if not using_vectors:
+            raise ValueError("Cannot search without vector")
+
+        for i in range(len(queries)):
+            if not isinstance(queries[i], models.QueryRequest):
+                if isinstance(queries[i], str):
+                    feat_query = self.encode_query(queries[i], return_vectors=using_vectors)
+                    prefetch = self.create_prefetch(**feat_query, search_limit=search_limit)
+                    queries[i] = prefetch
+
+                queries[i] = models.QueryRequest(
+                    prefetch=queries[i],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    filter=models.Filter(must=filter),
+                    params=self.search_params,
+                    limit=search_limit,
+                    with_vector=return_vectors,
+                    with_payload=return_payloads,
+                )
+
+        results = self.database_client.query_batch_points(
+            collection_name,
+            requests=queries,
+        )
+        points = [res.points for res in results]
+        return points
+
+
     def aggregated_search(
         self,
         collection_name: str,
@@ -418,39 +456,48 @@ class QueryManager:
 
         # Initial list
         feat_query = self.encode_query(query)
+        query_prefetch = self.create_prefetch(
+            siglip2_dense=feat_query["siglip2_dense"],
+            bgem3_dense=feat_query["bgem3_dense"],
+            bgem3_sparse=feat_query["bgem3_sparse"],
+            search_limit=search_limit
+        )
         points = self.search(
             collection_name,
-            query=query,
+            query=query_prefetch,
             search_limit=search_limit,
             return_vectors=["siglip2_dense", "beit3_dense", "bgem3_dense", "bgem3_sparse"],
             return_payloads=True
         )
 
+        # Batch ANN search
+        batch_requests = []
         for point in points:
-            vid_id, time_order = point.payload["vid_id"], float(point.payload["time_order"])
-
-            # ANN implementation
-            point_prefetch = self.create_prefetch(
+            vid_id = point.payload["vid_id"]
+            prefetch = self.create_prefetch(
                 siglip2_dense=point.vector["siglip2_dense"],
                 search_limit=aggregation_neighbor_limit+1
             )
-            neighbors = self.search(
-                collection_name,
-                query=point_prefetch,
-                using_vectors=["siglip2_dense"],
-                search_limit=search_limit+1,
-                return_vectors=["siglip2_dense", "beit3_dense", "bgem3_dense", "bgem3_sparse"],
-                return_payloads=["time_order"],
-                filter=[self.create_filter("vid_id", vid_id)]
-            )[1:]
-
+            batch_requests.append(models.QueryRequest(
+                prefetch=prefetch,
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                filter=models.Filter(must=[self.create_filter("vid_id", vid_id)]),
+                params=self.search_params,
+                limit=aggregation_neighbor_limit+1,
+                with_vector=["siglip2_dense", "beit3_dense", "bgem3_dense", "bgem3_sparse"],
+                with_payload=["time_order"],
+            ))
+        points_neighbors = self.batch_search(collection_name, queries=batch_requests)
+        points_neighbors = [neighbors[1:] for neighbors in points_neighbors]
+            
+        for point, neighbors in zip(points, points_neighbors):
             if not neighbors: continue
+            point_time_order = float(point.payload["time_order"])
             neighbor_time_orders = [float(neighbor.payload["time_order"]) for neighbor in neighbors]
-            delta = (max(neighbor_time_orders) - min(neighbor_time_orders)) / len(neighbors)
+            delta = max((max(neighbor_time_orders) - min(neighbor_time_orders)) / len(neighbors), 1e-5)
 
             total_visual_score = 1
             total_temporal_score = 0
-
             for neighbor in neighbors:
                 # Visual relevance score
                 total_visual_score += self.cosine_similarity(point.vector["beit3_dense"], neighbor.vector["beit3_dense"])
@@ -468,7 +515,7 @@ class QueryManager:
                 query_neighbor_score = (temporal_evaluation_weights[0] * siglip2_dense_score +
                                         temporal_evaluation_weights[1] * bgem3_dense_score +
                                         temporal_evaluation_weights[2] * bgem3_sparse_score)
-                temporal_decay = np.exp(-((time_order - neighbor_time_order) ** 2) / (2 * delta ** 2))
+                temporal_decay = np.exp(-((point_time_order - neighbor_time_order) ** 2) / (2 * delta ** 2))
                 total_temporal_score += query_neighbor_score * temporal_decay
 
             aggregation_score = (np.log(total_visual_score) / len(neighbors)) * total_temporal_score
@@ -477,6 +524,7 @@ class QueryManager:
         # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
 
+    #! TO BE REMOVED FROM THIS CLASS
     def search_on_image(self, collection_name: str, frame_path: str, search_limit: int = 100):
         image_points = self.get_points(
             collection_name,
@@ -494,3 +542,11 @@ class QueryManager:
         )
 
         return result_points
+
+
+    #! TO BE REMOVED FROM THIS CLASS
+    def do_filter(self, collection_name: str, key: str, value):
+        return self.get_points(
+            collection_name,
+            filters=[self.create_filter(key, value)]
+        )
