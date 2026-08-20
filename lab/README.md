@@ -8,7 +8,7 @@ This repository is the local retrieval system for the AIC2026 multimedia video r
 - `BackEnd/API/` contains the official Django REST API.
 - `BackEnd/src/` contains retrieval code, including `QueryManager`, model wrappers, and `DataLoader`.
 - Qdrant stores dense and sparse vectors for video keyframes.
-- `AIC26/` is the local dataset root used by the backend loader and the frontend media server.
+- The local AIC26 dataset can live anywhere on your machine. Set `AIC_DATASET_ROOT` to its path, or omit it to use the default repository-root `AIC26/` folder.
 
 The current working Qdrant collection is:
 
@@ -21,7 +21,7 @@ aic2026_v2
 Important folders:
 
 ```text
-AIC26/              Local dataset. Not committed to git.
+AIC26/              Default local dataset location if AIC_DATASET_ROOT is not set. Not committed to git.
 BackEnd/API/        Django project and API app.
 BackEnd/src/        Retrieval models, QueryManager, DataLoader, and requirements.
 FrontEnd/           React/Vite frontend.
@@ -40,7 +40,46 @@ Install these before setting up the project:
 
 No required `.env` file was found in the current repository. The Django backend loads retrieval models when it starts, so the first startup may take time and may require model files to be available or downloadable by the installed model libraries.
 
-## 4. Clone / Pull the Repository
+## 4. Dataset Root Configuration
+
+The dataset root is configurable with one environment variable:
+
+```text
+AIC_DATASET_ROOT
+```
+
+Set it to the folder that directly contains:
+
+```text
+imgs/
+maps/
+mets/
+trans/
+vids/
+feats/
+```
+
+If `AIC_DATASET_ROOT` is not set, the code falls back to:
+
+```text
+AIC26
+```
+
+macOS/Linux example:
+
+```bash
+export AIC_DATASET_ROOT="/path/to/AIC26"
+```
+
+Windows PowerShell example:
+
+```powershell
+$env:AIC_DATASET_ROOT="D:\Datasets\AIC26"
+```
+
+Use the same value in any terminal that runs DataLoader or the Vite frontend. The Django search API itself reads from Qdrant, but keeping the variable set consistently avoids surprises when running tools.
+
+## 5. Clone / Pull the Repository
 
 Fresh clone:
 
@@ -59,7 +98,7 @@ git pull origin main
 
 If you are working on a feature branch, pull or merge using the team workflow for that branch.
 
-## 5. Python Virtual Environment Setup
+## 6. Python Virtual Environment Setup
 
 Run from the repository root:
 
@@ -84,12 +123,12 @@ Use it inline with commands, for example:
 PYTHONPATH="$PWD/BackEnd/src:$PWD" python BackEnd/API/manage.py runserver 127.0.0.1:8000
 ```
 
-## 6. Dataset Setup
+## 7. Dataset Setup
 
-Place the dataset at the repository root:
+Place the dataset at `AIC_DATASET_ROOT`, or at repository-root `AIC26/` if the variable is not set:
 
 ```text
-AIC26/
+<dataset-root>/
   imgs/<video_id>/<frame_id>.jpg
   maps/<video_id>.csv
   mets/<video_id>.json
@@ -103,7 +142,7 @@ Do not commit or download the dataset through git.
 Current feature files are `.npz` files, not the old `.npy` feature directory format. The current `DataLoader` expects one `.npz` file per frame under:
 
 ```text
-AIC26/feats/<video_id>/<frame_id>.npz
+<dataset-root>/feats/<video_id>/<frame_id>.npz
 ```
 
 Each `.npz` frame feature file is loaded with these keys:
@@ -124,7 +163,9 @@ vid_id,frame_id,frame_order,time_order,fps,transcript,base_yt_link
 
 If your map CSV files only contain `frame_id,frame_order,time_order,fps`, use the existing packaging code in `lab/extract_code/extraction_tools.py` to enrich maps before uploading, or use an already populated `aic2026_v2` Qdrant storage.
 
-## 7. Start Qdrant
+Qdrant payload media paths should stay dataset-relative, for example `imgs/L27_V015/057.jpg` and `vids/L27_V015.mp4`. This avoids storing personal absolute paths in shared Qdrant data.
+
+## 8. Start Qdrant
 
 No repository-specific Docker Compose file was found. The current code expects Qdrant at:
 
@@ -154,7 +195,7 @@ Verify Qdrant is running:
 curl http://127.0.0.1:6333/collections
 ```
 
-## 8. Prepare / Verify the Qdrant Collection
+## 9. Prepare / Verify the Qdrant Collection
 
 ### A. If `aic2026_v2` Already Exists
 
@@ -178,7 +219,8 @@ The current upload API is `DataLoader` in `BackEnd/src/db_management_tools.py`.
 
 Important behavior:
 
-- `DataLoader("AIC26")` reads dataset files from the local `AIC26/` directory.
+- `DataLoader()` reads from `AIC_DATASET_ROOT` when set, otherwise from `AIC26`.
+- `DataLoader("AIC26")` still works for the default repository-root dataset.
 - It connects to Qdrant using gRPC at `http://localhost:6334`.
 - `create_and_fill_database("aic2026_v2", upload_batch_size=256, upload_num_workers=1)` creates the collection and uploads points.
 - Point IDs are generated as UUIDs.
@@ -192,7 +234,7 @@ Create a temporary local upload file, for example `tmp/upload_aic2026_v2.py`:
 ```python
 from db_management_tools import DataLoader
 
-loader = DataLoader("AIC26")
+loader = DataLoader()
 loader.create_and_fill_database(
     "aic2026_v2",
     upload_batch_size=256,
@@ -204,12 +246,13 @@ Run it from the repository root:
 
 ```bash
 mkdir -p tmp
+export AIC_DATASET_ROOT="/path/to/AIC26"
 PYTHONPATH="$PWD/BackEnd/src:$PWD" python tmp/upload_aic2026_v2.py
 ```
 
 Use a higher `upload_num_workers` only after confirming the single-worker upload works on your machine.
 
-## 9. Start Django Backend
+## 10. Start Django Backend
 
 From the repository root:
 
@@ -235,7 +278,7 @@ POST /api/continuoussearch/
 POST /api/filter/
 ```
 
-## 10. Backend Smoke Tests
+## 11. Backend Smoke Tests
 
 List collections:
 
@@ -268,7 +311,7 @@ curl -s -X POST http://127.0.0.1:8000/api/search/ \
 
 A successful search response should return HTTP success and a JSON object with a `results` array. Result items include fields such as `id`, `score`, `image_path`, `video_id`, `timestamp`, and a `payload` object containing frame/video metadata such as `vid_id`, `frame_id`, `time_order`, `frame_order`, `transcript`, and `yt_link` when available.
 
-## 11. Start Frontend
+## 12. Start Frontend
 
 From the repository root:
 
@@ -290,9 +333,17 @@ The Vite dev server proxies `/api` to:
 http://localhost:8000
 ```
 
-It also serves local dataset media from the repository-root `AIC26/` directory through internal dev-server routes used by the UI.
+It also serves local dataset media from `AIC_DATASET_ROOT`, falling back to repository-root `AIC26/` when the variable is not set.
 
-## 12. Verify the Full System
+If the dataset is outside the repository, export the variable in the frontend terminal before running Vite:
+
+```bash
+export AIC_DATASET_ROOT="/path/to/AIC26"
+cd FrontEnd
+npm run dev
+```
+
+## 13. Verify the Full System
 
 Check this sequence:
 
@@ -302,11 +353,11 @@ Check this sequence:
 - Vite frontend is running on `localhost:5173`.
 - The frontend uses `aic2026_v2`.
 - A text query returns search results.
-- Result images load from `AIC26/imgs`.
-- Video preview opens from `AIC26/vids`.
+- Result images load from `<dataset-root>/imgs`.
+- Video preview opens from `<dataset-root>/vids`.
 - Timestamp seeking opens near the selected frame time.
 
-## 13. Common Problems / Troubleshooting
+## 14. Common Problems / Troubleshooting
 
 ### `ModuleNotFoundError: No module named 'models'`
 
@@ -339,11 +390,11 @@ curl -s http://127.0.0.1:6333/collections/aic2026_v2 | python -m json.tool
 
 ### Dataset Files Missing
 
-The frontend and DataLoader expect `AIC26/` at the repository root. Check that frame images, videos, maps, transcripts, metadata, and features are under that directory.
+Check that `AIC_DATASET_ROOT` points to the folder that directly contains `imgs/`, `maps/`, `mets/`, `trans/`, `vids/`, and `feats/`. If the variable is not set, the fallback is repository-root `AIC26/`.
 
 ### Old `.npy` Features
 
-The current loader expects packed per-frame `.npz` files under `AIC26/feats/<video_id>/<frame_id>.npz`. Old expanded `.npy` feature folders are not the current upload format.
+The current loader expects packed per-frame `.npz` files under `<dataset-root>/feats/<video_id>/<frame_id>.npz`. Old expanded `.npy` feature folders are not the current upload format.
 
 ### Map CSV Key Errors During Upload
 
@@ -357,11 +408,11 @@ If those columns are missing, prepare enriched maps before running the full uplo
 
 ### Image or Video Does Not Load
 
-The Vite dev server serves local media from repository-root `AIC26/`. Confirm:
+The Vite dev server serves local media from `AIC_DATASET_ROOT`, falling back to repository-root `AIC26/`. Confirm:
 
 ```text
-AIC26/imgs/<video_id>/<frame_id>.jpg
-AIC26/vids/<video_id>.mp4
+<dataset-root>/imgs/<video_id>/<frame_id>.jpg
+<dataset-root>/vids/<video_id>.mp4
 ```
 
 ### Wrong Collection
@@ -372,7 +423,21 @@ The current frontend should show and use only `aic2026_v2`. Verify the backend h
 curl -s http://127.0.0.1:8000/api/collections/ | python -m json.tool
 ```
 
-## 14. Quick Start
+### Dataset Outside the Repository
+
+Set `AIC_DATASET_ROOT` in every terminal that needs local dataset access, especially the Vite frontend terminal:
+
+```bash
+export AIC_DATASET_ROOT="/path/to/AIC26"
+```
+
+For PowerShell:
+
+```powershell
+$env:AIC_DATASET_ROOT="D:\Datasets\AIC26"
+```
+
+## 15. Quick Start
 
 Use this when the dataset and populated `aic2026_v2` collection are already ready.
 
@@ -397,6 +462,7 @@ Terminal 2: start Django.
 
 ```bash
 source .venv/bin/activate
+export AIC_DATASET_ROOT="/path/to/AIC26"
 PYTHONPATH="$PWD/BackEnd/src:$PWD" python BackEnd/API/manage.py runserver 127.0.0.1:8000
 ```
 
@@ -405,6 +471,7 @@ Terminal 3: start Vite.
 ```bash
 cd FrontEnd
 npm install
+export AIC_DATASET_ROOT="/path/to/AIC26"
 npm run dev
 ```
 
@@ -420,7 +487,9 @@ Search for:
 một người đang câu cá
 ```
 
-## 15. Current Known Working Configuration
+If your dataset is at repository-root `AIC26/`, you can omit both `export AIC_DATASET_ROOT=...` lines.
+
+## 16. Current Known Working Configuration
 
 ```text
 Collection:   aic2026_v2
@@ -428,5 +497,5 @@ Qdrant HTTP: 127.0.0.1:6333
 Qdrant gRPC: 127.0.0.1:6334
 Django API:  127.0.0.1:8000
 Frontend:    Vite dev server
-Dataset:     AIC26/
+Dataset:     AIC_DATASET_ROOT, or AIC26/ when unset
 ```

@@ -1,15 +1,18 @@
 import pandas as pd
 import numpy as np
 import uuid
+import os
 from pathlib import Path
 from qdrant_client import QdrantClient, models
 from models import *
 from tqdm import tqdm
 
+DATASET_ROOT_ENV = "AIC_DATASET_ROOT"
+
 class DataLoader:
-    def __init__(self, dataset_dir: str, database_client_url: str = "http://localhost:6334", vid_dir: str = "vids"):
+    def __init__(self, dataset_dir: str | Path | None = None, database_client_url: str = "http://localhost:6334", vid_dir: str = "vids"):
         # Running setup
-        self.dataset_dir = Path(dataset_dir)
+        self.dataset_dir = Path(dataset_dir or os.environ.get(DATASET_ROOT_ENV, "AIC26")).expanduser().resolve()
         self.database_client = QdrantClient(url=database_client_url, prefer_grpc=True)
 
         # Schema
@@ -89,8 +92,8 @@ class DataLoader:
             }
         ]
 
-        self.map_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("maps/**/*.csv")} # Maps
-        self.frame_paths_map = {(path.parts[-2], path.stem): str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")} # Keyframes
+        self.map_paths_map = {path.stem: path for path in self.dataset_dir.rglob("maps/**/*.csv")} # Maps
+        self.frame_paths_map = {(path.parent.name, path.stem): path for path in self.dataset_dir.rglob("imgs/**/*.jpg")} # Keyframes
         self.frame_info_map = {}
         self.build_frame_info_map(vid_dir)
 
@@ -108,6 +111,7 @@ class DataLoader:
                 vid_id = row["vid_id"]
                 frame_id = f"{row["frame_id"]:03d}"
                 frame_path = self.frame_paths_map[(vid_id, frame_id)]
+                relative_frame_path = frame_path.relative_to(self.dataset_dir)
                 frame_order = int(row["frame_order"])
                 time_order = float(row["time_order"])
                 fps = float(row["fps"])
@@ -117,7 +121,7 @@ class DataLoader:
 
                 self.frame_info_map[(vid_id, frame_id)] = {
                     "vid_path": vid_path,
-                    "frame_path": frame_path,
+                    "frame_path": str(relative_frame_path),
                     "vid_id": vid_id,
                     "frame_id": frame_id,
                     "frame_order": frame_order,
@@ -173,8 +177,8 @@ class DataLoader:
 
     def points_generator(self):
         for frame_path in self.frame_paths_map.values():
-            vid_id = Path(frame_path).parts[-2]
-            frame_id = Path(frame_path).stem
+            vid_id = frame_path.parent.name
+            frame_id = frame_path.stem
             feats_path = self.dataset_dir / "feats" / vid_id / f"{frame_id}.npz"
             feats = np.load(feats_path)
 
