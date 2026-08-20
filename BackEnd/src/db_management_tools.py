@@ -4,7 +4,7 @@ import uuid
 import os
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 from tqdm import tqdm
 
 DATASET_ROOT_ENV = "AIC_DATASET_ROOT"

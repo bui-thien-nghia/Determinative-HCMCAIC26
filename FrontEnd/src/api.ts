@@ -36,7 +36,7 @@ export const api = {
     return collections.map((name) => ({ id: name, name }))
   },
 
-  search: async (query: string, collection: string, modelId: string, topK: number): Promise<SearchResult[]> => {
+  search: async (query: string, collection: string, modelId: string, topK: number, filters: any): Promise<SearchResult[]> => {
     try {
       const response = await fetch('/api/search/', {
         method: 'POST',
@@ -45,11 +45,10 @@ export const api = {
         },
         body: JSON.stringify({
           query: query,
-          mode: 'AUTO',
           collection: collection,
           model_id: modelId,
           top_k: topK,
-          language: 'AUTO',
+          filters: filters,
         }),
       })
 
@@ -115,7 +114,7 @@ export const api = {
 
     const data = await readJson<CollectionsApiResponse>(response)
     return Array.isArray(data.collections)
-      ? data.collections.filter((collection) => collection === ACTIVE_COLLECTION)
+      ? data.collections
       : []
   },
 
