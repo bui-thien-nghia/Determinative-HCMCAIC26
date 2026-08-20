@@ -106,7 +106,7 @@ export const api = {
     }
   },
 
-  continuousSearch: async (imgLink: string, collection: string) => {
+  continuousSearch: async (collection: string, video_id: string, frame_id: string) => {
     try {
       const response = await fetch('/api/continuoussearch/', {
         method: "POST",
@@ -115,7 +115,8 @@ export const api = {
         },
         body: JSON.stringify({
           collection: collection,
-          frame_path: imgLink,
+          video_id: video_id,
+          frame_id: frame_id,
         }),
       });
 
@@ -167,6 +168,32 @@ export const api = {
 
       const data = await response.json();
       return data.schema;
+    } catch (error){
+      console.error("Error: ", error);
+      return [];
+    }
+  },
+
+  doFilter: async (collection: string, key: string, value: string) => {
+    try {
+      const response = await fetch ('/api/filter/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          collection: collection,
+          key: key,
+          value: value,
+        }),
+      });
+
+      if (!response.ok){
+        throw new Error(`HTTP errot! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.results;
     } catch (error){
       console.error("Error: ", error);
       return [];
