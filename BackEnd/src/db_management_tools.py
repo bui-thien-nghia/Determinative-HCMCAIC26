@@ -546,12 +546,3 @@ class QueryManager:
         )
 
         return result_points
-
-
-    #! TO BE REMOVED FROM THIS CLASS
-    def do_filter(self, collection_name: str, key: str, value, pagination_limit: int = 1000):
-        return self.get_points(
-            collection_name,
-            filters=self.create_filters(**{key: value}),
-            pagination_limit=pagination_limit
-        )
