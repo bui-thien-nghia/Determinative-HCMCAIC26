@@ -10,11 +10,14 @@ from .serializers import SearchRequest
 
 from BackEnd.src.db_management_tools import QueryManager
 from BackEnd.src.models import SigLIP2Model, BGEM3Model
+from .search_service import AdvancedQueryService
 
 query_manager = QueryManager(
     SigLIP2Model(name="google/siglip2-so400m-patch14-384", device="cpu"),
     BGEM3Model(name="BAAI/bge-m3", device="cpu")
 )
+
+advanced_query_service = AdvancedQueryService(query_manager)
 
 def formatResult(points: any):
     formatted_results = []
@@ -23,7 +26,7 @@ def formatResult(points: any):
                     
         result_item = {
             "id": str(point.id),
-            "score": float(point.score),
+            "score": float(getattr(point, "score", 0)),
             "image_path": str(q_payload.get("frame_path", "")),
             "video_id": str(q_payload.get("vid_id", "")),
             "timestamp": int(q_payload.get("time_order", 0)),
@@ -67,33 +70,7 @@ def Search(request):
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 
-        formatted_results = []
-        for point in points:
-            q_payload = point.payload or {}
-            
-            result_item = {
-                "id": str(point.id),
-                "score": float(point.score),
-                "image_path": str(q_payload.get("frame_path", "")),
-                "video_id": str(q_payload.get("vid_id", "")),
-                "timestamp": int(q_payload.get("time_order", 0)),
-                "payload": {
-                    "video_path": str(q_payload.get("vid_path", "")),
-                    "video_id": str(q_payload.get("vid_id", "")),
-                    "frame_id": str(q_payload.get("frame_id", "")),
-                    "img_link": str(q_payload.get("frame_path", "")),
-                    "timestamp": float(q_payload.get("time_order", 0)),
-                    "caption": str(q_payload.get("transcript", "")),
-                    "fps": int(q_payload.get("fps", 0)),
-                    "time_order": float(q_payload.get("time_order", 0)),
-                    "frame_order": int(q_payload.get("frame_order", 0)),
-                    "transcript": str(q_payload.get("transcript", "")),
-                    "youtube_link": str(q_payload.get("yt_link", ""))
-                }
-            }
-            formatted_results.append(result_item)
-
-        return Response({'results': formatted_results}, status = 200)
+        return Response({'results': formatResult(points)}, status = 200)
     
     return Response(serializer.errors, status = 400)
 
@@ -116,33 +93,7 @@ def AggregatedSearch(request):
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 
-        formatted_results = []
-        for point in points:
-            q_payload = point.payload or {}
-
-            result_item = {
-                "id": str(point.id),
-                "score": float(point.score),
-                "image_path": str(q_payload.get("frame_path", "")),
-                "video_id": str(q_payload.get("vid_id", "")),
-                "timestamp": int(q_payload.get("time_order", 0)),
-                "payload": {
-                    "video_path": str(q_payload.get("vid_path", "")),
-                    "video_id": str(q_payload.get("vid_id", "")),
-                    "frame_id": str(q_payload.get("frame_id", "")),
-                    "img_link": str(q_payload.get("frame_path", "")),
-                    "timestamp": float(q_payload.get("time_order", 0)),
-                    "caption": str(q_payload.get("transcript", "")),
-                    "fps": int(q_payload.get("fps", 0)),
-                    "time_order": float(q_payload.get("time_order", 0)),
-                    "frame_order": int(q_payload.get("frame_order", 0)),
-                    "transcript": str(q_payload.get("transcript", "")),
-                    "youtube_link": str(q_payload.get("yt_link", ""))
-                }
-            }
-            formatted_results.append(result_item)
-
-        return Response({'results': formatted_results}, status = 200)
+        return Response({'results': formatResult(points)}, status = 200)
 
     return Response(serializer.errors, status = 400)
         
@@ -169,6 +120,7 @@ def describeSchema(request):
 
     field_mapping = {
         "frame_path": "img_link",
+        "vid_id": "video_id",
         "vid_path": "video_path",
         "yt_link": "youtube_link",
     }
@@ -186,20 +138,48 @@ def describeSchema(request):
 @api_view(['POST'])
 def continuousSearch(request):
     collection = request.data.get("collection")
-    frame_path = request.data.get("frame_path")
+    video_id = request.data.get("video_id")
+    frame_id = request.data.get("frame_id")
 
-    if not collection or not frame_path:
+    if not collection or not video_id or not frame_id:
         return Response({'error': 'Missing parameter'}, status=400)
 
     try:
-        points = query_manager.search_on_image(
+        points = advanced_query_service.search_on_image(
             collection_name = collection,
-            frame_path = frame_path 
+            vid_id = video_id,
+            frame_id = frame_id, 
         )
     except Exception as e:
         return Response({'error': str(e)}, status=500)
 
     return Response({'results': formatResult(points)}, status = 200)
 
+@api_view(['POST'])
+def doFilter(request):
+    collection_name = request.data.get("collection")
+    key = request.data.get("key")
+    value = request.data.get("value")
+
+    if not collection_name or not key or not value:
+        return Response({'error': 'Missing parameter'}, status = 400)
+
+    field_mapping = {
+        "img_link": "frame_path",
+        "video_id": "vid_id",
+        "video_path": "vid_path",
+        "youtube_link": "yt_link",
+    }
+
+    try:
+        points = advanced_query_service.do_filter(
+            collection_name = collection_name,
+            key = field_mapping.get(key, key),
+            value = value,
+        )
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+    return Response({'results': formatResult(points)}, status = 200)
 
         
