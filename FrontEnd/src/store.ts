@@ -1,4 +1,12 @@
 import { create } from 'zustand'
+import {
+  DEFAULT_QUERY_NAME,
+  getSubmissionFrame,
+  getSubmissionKey,
+  getSubmissionVideoId,
+  type SubmissionPackageFile,
+  type SubmissionQueryType,
+} from './utils/submission'
 
 export interface SearchResult {
   id: string
@@ -47,6 +55,8 @@ export interface TrakeEvent {
   order: number
   label: string
   description?: string
+  frameOrder?: string
+  sourceVideoId?: string
   selectedCandidate?: RecheckItem
 }
 
@@ -94,6 +104,8 @@ interface AppState {
   searchHistory: SearchHistoryItem[]
   toasts: Toast[]
   searchStatus: SearchStatus
+  submissionQueryName: string
+  submissionPackage: SubmissionPackageFile[]
 
   columns: number
   topK: number
@@ -140,6 +152,10 @@ interface AppState {
   setError: (err: string | null) => void
   setDisplayMode: (mode: 'fast' | 'full') => void
   setSearchStatus: (status: SearchStatus) => void
+  setSubmissionQueryName: (name: string) => void
+  addSubmissionPackageFile: (file: SubmissionPackageFile) => void
+  removeSubmissionPackageFile: (filename: string) => void
+  clearSubmissionPackage: () => void
 
   addToRecheckList: (item: Omit<RecheckItem, 'addedAt'>) => void
   removeFromRecheckList: (id: string) => void
@@ -148,16 +164,19 @@ interface AppState {
   reorderRecheckItem: (fromIdx: number, toIdx: number) => void
   updateRecheckItemAnswer: (id: string, answer: string) => void
   
-  addCandidate: (result: SearchResult) => void
+  addCandidate: (result: SearchResult, options?: { quiet?: boolean }) => void
   
   setTrakeSelectedVideo: (videoId: string | null) => void
   setTrakeStage: (stage: 1 | 2) => void
   setTrakeActiveEvent: (eventId: string | null) => void
   setTrakeEventCandidate: (eventId: string, candidate: RecheckItem | undefined) => void
+  setTrakeEventFrameOrder: (eventId: string, frameOrder: string) => void
+  setTrakeEventCount: (count: number) => void
   clearTrakeEvent: (eventId: string) => void
   clearAllTrakeEvents: () => void
   addTrakeEvent: () => void
   removeTrakeEvent: (eventId: string) => void
+  moveTrakeEvent: (eventId: string, direction: 'up' | 'down') => void
 
   addToast: (message: string, type?: 'success' | 'error' | 'info') => void
   removeToast: (id: string) => void
@@ -172,6 +191,72 @@ const loadHistory = (): SearchHistoryItem[] => {
   }
 }
 
+const SUBMISSION_STORAGE_KEY = 'aic_submission_workspace'
+
+type PersistedSubmissionState = Pick<AppState, 'mode' | 'submissionQueryName' | 'recheckList' | 'trakeState' | 'submissionPackage'>
+
+const compactRecheckItem = (item: RecheckItem): RecheckItem => ({
+  id: item.id,
+  img_link: item.img_link,
+  addedAt: item.addedAt,
+  answerType: item.answerType,
+  answer: item.answer || '',
+  payload: {
+    video_id: getSubmissionVideoId(item),
+    frame_id: item.payload.frame_id,
+    frame_order: item.payload.frame_order,
+    time_order: item.payload.time_order,
+    timestamp: item.payload.timestamp,
+    fps: item.payload.fps,
+    score: item.payload.score,
+    img_link: item.payload.img_link,
+  },
+})
+
+const compactTrakeState = (trakeState: TrakeState): TrakeState => ({
+  ...trakeState,
+  events: trakeState.events.map((event) => ({
+    ...event,
+    frameOrder: event.frameOrder || '',
+    sourceVideoId: event.sourceVideoId,
+    selectedCandidate: event.selectedCandidate ? compactRecheckItem(event.selectedCandidate) : undefined,
+  })),
+})
+
+const loadSubmissionState = (): Partial<PersistedSubmissionState> => {
+  try {
+    const data = localStorage.getItem(SUBMISSION_STORAGE_KEY)
+    return data ? JSON.parse(data) : {}
+  } catch {
+    return {}
+  }
+}
+
+const persistedSubmission = loadSubmissionState()
+const MIN_TRAKE_EVENTS = 1
+const MAX_TRAKE_EVENTS = 20
+
+const makeTrakeEvent = (index: number): TrakeEvent => ({
+  id: `evt-${Date.now()}-${index}`,
+  order: index + 1,
+  label: `Event ${index + 1}`,
+  frameOrder: '',
+})
+
+const relabelTrakeEvents = (events: TrakeEvent[]) => (
+  events.map((event, index) => ({ ...event, order: index + 1, label: `Event ${index + 1}` }))
+)
+
+const clampTrakeEventCount = (count: number) => {
+  const normalized = Number.isFinite(count) ? Math.floor(count) : MIN_TRAKE_EVENTS
+  return Math.min(MAX_TRAKE_EVENTS, Math.max(MIN_TRAKE_EVENTS, normalized))
+}
+
+const defaultTrakeEvents: TrakeEvent[] = [makeTrakeEvent(0), makeTrakeEvent(1)]
+const persistedTrakeEvents = persistedSubmission.trakeState?.events?.length
+  ? relabelTrakeEvents(persistedSubmission.trakeState.events)
+  : defaultTrakeEvents
+
 export const useStore = create<AppState>((set) => ({
   currentDataset: 'aic2026_v2',
   currentModel: 'siglip2',
@@ -182,21 +267,23 @@ export const useStore = create<AppState>((set) => ({
   filterValues: {},
   metadataVisibility: {},
   searchResults: [],
-  recheckList: [],
+  recheckList: persistedSubmission.recheckList || [],
   trakeState: {
-    selectedVideoId: null,
-    stage: 1 as const,
-    activeEventId: null,
-    events: []
+    selectedVideoId: persistedSubmission.trakeState?.selectedVideoId ?? null,
+    stage: persistedSubmission.trakeState?.stage ?? 1 as const,
+    activeEventId: persistedSubmission.trakeState?.activeEventId ?? null,
+    events: persistedTrakeEvents
   },
   searchHistory: loadHistory(),
   toasts: [],
   searchStatus: { state: 'idle', latency: null },
+  submissionQueryName: persistedSubmission.submissionQueryName || DEFAULT_QUERY_NAME,
+  submissionPackage: persistedSubmission.submissionPackage || [],
 
   columns: 4,
   topK: 100,
   language: 'AUTO',
-  mode: 'KIS',
+  mode: persistedSubmission.mode || 'KIS',
   lastSearch: null,
   previewResult: null,
   playingVideo: null,
@@ -272,6 +359,17 @@ export const useStore = create<AppState>((set) => ({
   setIsLoading: (loading) => set({ isLoading: loading }),
   setError: (err) => set({ error: err }),
   setDisplayMode: (displayMode) => set({ displayMode }),
+  setSubmissionQueryName: (submissionQueryName) => set({ submissionQueryName }),
+  addSubmissionPackageFile: (file) => set((state) => ({
+    submissionPackage: [
+      ...state.submissionPackage.filter((existing) => existing.filename !== file.filename),
+      file,
+    ].sort((a, b) => a.filename.localeCompare(b.filename)),
+  })),
+  removeSubmissionPackageFile: (filename) => set((state) => ({
+    submissionPackage: state.submissionPackage.filter((file) => file.filename !== filename),
+  })),
+  clearSubmissionPackage: () => set({ submissionPackage: [] }),
 
   addToRecheckList: (item) => set((state) => {
     if (state.recheckList.length >= 100) return state
@@ -332,7 +430,7 @@ export const useStore = create<AppState>((set) => ({
   })),
 
   setTrakeSelectedVideo: (videoId) => set((state) => ({
-    trakeState: { ...state.trakeState, selectedVideoId: videoId }
+    trakeState: { ...state.trakeState, selectedVideoId: videoId ? videoId.replace(/\.mp4$/i, '') : null }
   })),
 
   setTrakeStage: (stage) => set((state) => ({
@@ -345,16 +443,53 @@ export const useStore = create<AppState>((set) => ({
 
   setTrakeEventCandidate: (eventId, candidate) => set((state) => {
     const newEvents = state.trakeState.events.map(evt => 
-      evt.id === eventId ? { ...evt, selectedCandidate: candidate } : evt
+      evt.id === eventId ? {
+        ...evt,
+        selectedCandidate: candidate,
+        frameOrder: candidate ? String(getSubmissionFrame(candidate) ?? '') : '',
+        sourceVideoId: candidate ? getSubmissionVideoId(candidate) : undefined,
+      } : evt
     )
     return {
       trakeState: { ...state.trakeState, events: newEvents }
     }
   }),
 
+  setTrakeEventFrameOrder: (eventId, frameOrder) => set((state) => {
+    const nextFrameOrder = frameOrder.replace(/[^\d]/g, '')
+    const newEvents = state.trakeState.events.map(evt =>
+      evt.id === eventId ? {
+        ...evt,
+        frameOrder: nextFrameOrder,
+        sourceVideoId: undefined,
+        selectedCandidate: undefined,
+      } : evt
+    )
+    return {
+      trakeState: { ...state.trakeState, events: newEvents }
+    }
+  }),
+
+  setTrakeEventCount: (count) => set((state) => {
+    const nextCount = clampTrakeEventCount(count)
+    const nextEvents = Array.from({ length: nextCount }, (_, index) => (
+      state.trakeState.events[index] ?? makeTrakeEvent(index)
+    ))
+    const events = relabelTrakeEvents(nextEvents)
+    return {
+      trakeState: {
+        ...state.trakeState,
+        activeEventId: events.some((event) => event.id === state.trakeState.activeEventId)
+          ? state.trakeState.activeEventId
+          : null,
+        events,
+      }
+    }
+  }),
+
   clearTrakeEvent: (eventId) => set((state) => {
     const newEvents = state.trakeState.events.map(evt => 
-      evt.id === eventId ? { ...evt, selectedCandidate: undefined } : evt
+      evt.id === eventId ? { ...evt, frameOrder: '', sourceVideoId: undefined, selectedCandidate: undefined } : evt
     )
     return {
       trakeState: { ...state.trakeState, events: newEvents }
@@ -366,40 +501,80 @@ export const useStore = create<AppState>((set) => ({
       selectedVideoId: null,
       stage: 1 as const,
       activeEventId: null,
-      events: state.trakeState.events.map(evt => ({ ...evt, selectedCandidate: undefined }))
+      events: state.trakeState.events.length
+        ? state.trakeState.events.map(evt => ({ ...evt, frameOrder: '', sourceVideoId: undefined, selectedCandidate: undefined }))
+        : defaultTrakeEvents
     }
   })),
 
   addTrakeEvent: () => set((state) => {
+    if (state.trakeState.events.length >= MAX_TRAKE_EVENTS) {
+      state.addToast(`Maximum ${MAX_TRAKE_EVENTS} TRAKE events allowed`, 'error')
+      return state
+    }
     const n = state.trakeState.events.length + 1
-    const newId = `evt-${Date.now()}`
     return {
       trakeState: {
         ...state.trakeState,
-        events: [...state.trakeState.events, { id: newId, order: n, label: `Event ${n}` }]
+        events: relabelTrakeEvents([...state.trakeState.events, makeTrakeEvent(n - 1)])
       }
     }
   }),
 
   removeTrakeEvent: (eventId) => set((state) => {
+    if (state.trakeState.events.length <= MIN_TRAKE_EVENTS) return state
     const newEvents = state.trakeState.events
       .filter(e => e.id !== eventId)
-      .map((e, i) => ({ ...e, order: i + 1, label: `Event ${i + 1}` }))
+    if (newEvents.length < MIN_TRAKE_EVENTS) return state
     return {
       trakeState: {
         ...state.trakeState,
         activeEventId: state.trakeState.activeEventId === eventId ? null : state.trakeState.activeEventId,
-        events: newEvents
+        events: relabelTrakeEvents(newEvents)
       }
     }
   }),
 
-  addCandidate: (result) => set((state) => {
-    const mode = state.mode
+  moveTrakeEvent: (eventId, direction) => set((state) => {
+    const idx = state.trakeState.events.findIndex((event) => event.id === eventId)
+    if (idx < 0) return state
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (targetIdx < 0 || targetIdx >= state.trakeState.events.length) return state
+
+    const events = [...state.trakeState.events]
+    ;[events[idx], events[targetIdx]] = [events[targetIdx], events[idx]]
+    const relabeled = events.map((event, index) => ({ ...event, order: index + 1, label: `Event ${index + 1}` }))
+
+    return {
+      trakeState: {
+        ...state.trakeState,
+        events: relabeled,
+      }
+    }
+  }),
+
+  addCandidate: (result, options) => set((state) => {
+    const quiet = options?.quiet === true
+    const mode = state.mode as SubmissionQueryType
+    const frameOrder = getSubmissionFrame(result)
+    if (frameOrder == null) {
+      if (!quiet) state.addToast('Cannot add: frame_order is missing or invalid', 'error')
+      return state
+    }
+
+    const videoId = getSubmissionVideoId(result)
+    if (!videoId) {
+      if (!quiet) state.addToast('Cannot add: video_id is missing', 'error')
+      return state
+    }
+
     const item = {
-      id: result.id || `${result.payload?.video_id}_${result.payload?.frame_id}_${Date.now()}`,
+      id: result.id || `${videoId}_${frameOrder}_${Date.now()}`,
       img_link: result.payload?.img_link || result.image_path || '',
-      payload: result.payload,
+      payload: {
+        ...result.payload,
+        video_id: videoId,
+      },
       answerType: mode as any,
       addedAt: Date.now(),
       answer: ''
@@ -410,70 +585,66 @@ export const useStore = create<AppState>((set) => ({
         state.addToast('Maximum 100 candidates allowed', 'error')
         return state
       }
-      if (state.recheckList.some((x) => x.id === item.id)) {
-        state.addToast('Candidate already added', 'error')
+      const itemKey = getSubmissionKey(item)
+      if (state.recheckList.some((x) => getSubmissionKey(x) === itemKey)) {
+        if (!quiet) state.addToast('Candidate already added', 'error')
         return state
       }
       
       if (mode === 'QA') {
-        state.addToast('Added. Answer required.', 'info')
+        if (!quiet) state.addToast('Added. Answer required.', 'info')
       } else {
-        state.addToast('Added candidate via click', 'success')
+        if (!quiet) state.addToast('Added candidate via click', 'success')
       }
       
       return {
         recheckList: [...state.recheckList, item]
       }
     } else if (mode === 'TRAKE') {
-      const { stage, selectedVideoId, activeEventId, events } = state.trakeState
-      const newVideoId = result.payload.video_id
+      const { selectedVideoId, activeEventId } = state.trakeState
+      const newVideoId = videoId
 
-      // ── STAGE 1: video selection ────────────────────────────
-      if (stage === 1) {
-        // Just set the selected video; do NOT assign to any event yet
-        state.addToast(`Video selected: ${newVideoId}`, 'success')
-        return {
-          trakeState: { ...state.trakeState, selectedVideoId: newVideoId }
-        }
-      }
-
-      // ── STAGE 2: frame assignment ───────────────────────────
       if (selectedVideoId && selectedVideoId !== newVideoId) {
-        state.addToast(
+        if (!quiet) state.addToast(
           `Frame belongs to ${newVideoId} — TRAKE is locked to ${selectedVideoId}`,
           'error'
         )
         return state
       }
 
-      if (events.length === 0) {
-        state.addToast('Add at least one event first', 'error')
-        return state
-      }
+      const events = state.trakeState.events.length
+        ? state.trakeState.events
+        : defaultTrakeEvents
 
       // Determine target event: active or first empty
       const targetIdx = activeEventId
         ? events.findIndex(e => e.id === activeEventId)
-        : events.findIndex(e => !e.selectedCandidate)
+        : events.findIndex(e => !String(e.frameOrder || '').trim())
 
       if (targetIdx === -1) {
-        state.addToast('All TRAKE events are full', 'error')
+        if (!quiet) state.addToast('No empty TRAKE event input', 'error')
         return state
       }
 
       const newEvents = [...events]
-      newEvents[targetIdx] = { ...newEvents[targetIdx], selectedCandidate: item }
+      newEvents[targetIdx] = {
+        ...newEvents[targetIdx],
+        frameOrder: String(frameOrder),
+        sourceVideoId: newVideoId,
+        selectedCandidate: item,
+      }
 
       // Auto-advance active event to next empty slot
-      const nextEmptyIdx = newEvents.findIndex((e, i) => i > targetIdx && !e.selectedCandidate)
+      const nextEmptyIdx = newEvents.findIndex((e, i) => i > targetIdx && !String(e.frameOrder || '').trim())
       const nextActiveId = nextEmptyIdx !== -1 ? newEvents[nextEmptyIdx].id : null
 
-      state.addToast(`Assigned to ${newEvents[targetIdx].label}`, 'success')
+      if (!quiet) state.addToast(`Used Frame Idx ${frameOrder} for ${newEvents[targetIdx].label}`, 'success')
 
       return {
         trakeState: {
           ...state.trakeState,
           selectedVideoId: selectedVideoId || newVideoId,
+          stage: 2,
           activeEventId: nextActiveId,
           events: newEvents
         }
@@ -482,3 +653,18 @@ export const useStore = create<AppState>((set) => ({
     return state
   })
 }))
+
+useStore.subscribe((state) => {
+  try {
+    const payload: PersistedSubmissionState = {
+      mode: state.mode,
+      submissionQueryName: state.submissionQueryName,
+      recheckList: state.recheckList.map(compactRecheckItem),
+      trakeState: compactTrakeState(state.trakeState),
+      submissionPackage: state.submissionPackage,
+    }
+    localStorage.setItem(SUBMISSION_STORAGE_KEY, JSON.stringify(payload))
+  } catch {
+    // localStorage can fail in private browsing or when quota is exhausted.
+  }
+})

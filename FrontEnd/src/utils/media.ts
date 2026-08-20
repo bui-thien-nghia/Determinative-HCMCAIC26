@@ -2,6 +2,25 @@ const AIC_MEDIA_PREFIX = '/__aic_media__/'
 const AIC_VIDEO_PREFIX = '/__aic_video__/'
 const AIC_NEIGHBORS_PREFIX = '/__aic_neighbors__/'
 const SAFE_VIDEO_ID = /^[A-Za-z0-9_-]+$/
+const DATASET_DIRS = ['imgs', 'vids', 'maps', 'mets', 'trans', 'feats']
+
+function getDatasetRelativePath(path: string) {
+  const normalized = path.replace(/\\/g, '/')
+  const match = normalized.match(/(?:^|\/)(imgs|vids|maps|mets|trans|feats)\/(.+)$/)
+  if (!match) return ''
+
+  const relativePath = `${match[1]}/${match[2]}`
+  const segments = relativePath.split('/').filter(Boolean)
+  if (
+    segments.length < 2 ||
+    !DATASET_DIRS.includes(segments[0]) ||
+    segments.some((segment) => segment === '..' || segment === '.')
+  ) {
+    return ''
+  }
+
+  return relativePath
+}
 
 export interface NeighborFrame {
   id: string
@@ -27,14 +46,9 @@ export function getMediaUrl(path?: string | null) {
   if (/^(https?:|data:|blob:)/i.test(path)) return path
   if (path.startsWith(AIC_MEDIA_PREFIX) || path.startsWith('/static/') || path.startsWith('/media/')) return path
 
-  const normalized = path.replace(/\\/g, '/')
-  const marker = 'AIC26/'
-  const markerIndex = normalized.indexOf(marker)
-  if (markerIndex === -1) return ''
-
-  const relativePath = normalized.slice(markerIndex + marker.length)
+  const relativePath = getDatasetRelativePath(path)
+  if (!relativePath) return ''
   const segments = relativePath.split('/').filter(Boolean)
-  if (segments.length === 0 || segments.some((segment) => segment === '..' || segment === '.')) return ''
 
   return `${AIC_MEDIA_PREFIX}${segments.map(encodeURIComponent).join('/')}`
 }

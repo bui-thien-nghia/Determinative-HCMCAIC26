@@ -3,6 +3,8 @@ import { Search, Loader2, Type, Mic, FileQuestion, Trash, SlidersHorizontal, Dat
 import { useStore } from '../store'
 import { api } from '../api'
 
+const DEFAULT_LANGUAGE = 'AUTO'
+
 function formatFieldLabel(field: string) {
   return field
     .replace(/_/g, ' ')
@@ -33,7 +35,6 @@ export default function SearchPanel() {
 	    clearFilterValues,
 	    setMetadataVisibility,
 	    topK, setTopK,
-    language, setLanguage,
     mode, setMode,
     setSearchResults,
     addToSearchHistory,
@@ -102,13 +103,13 @@ export default function SearchPanel() {
         model_id: modelId,
         top_k: safeTopK,
         mode,
-        language,
+        language: DEFAULT_LANGUAGE,
       })
 
       addToSearchHistory({
         query: queryToSearch,
         mode,
-        language,
+        language: DEFAULT_LANGUAGE,
         top_k: safeTopK,
         collection,
         model_id: modelId,
@@ -139,7 +140,6 @@ export default function SearchPanel() {
   const handleRestoreHistory = (h: any) => {
     setQuery(h.query)
     setMode(h.mode)
-    setLanguage(h.language)
     setTopK(h.top_k)
     const restoredCollection = h.collection && availableCollections.includes(h.collection)
       ? h.collection
@@ -219,24 +219,6 @@ export default function SearchPanel() {
           >
             Refresh
           </button>
-        </div>
-
-        <div>
-          <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Language</label>
-          <select
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500"
-          >
-            <option value="AUTO">AUTO</option>
-            <option value="English">English</option>
-            <option value="Vietnamese">Vietnamese</option>
-          </select>
-          {language === 'Vietnamese' && (
-            <div className="text-[9px] text-amber-500/80 mt-1 italic">
-              Vietnamese search may be less accurate unless translation is enabled.
-            </div>
-          )}
         </div>
 
         <div>

@@ -5,6 +5,7 @@ import clsx from 'clsx'
 import { getImageUrl } from '../utils/media'
 import type { SearchResult } from '../store'
 import { formatSeconds, getResultCaption, getResultFrameId, getResultImagePath, getResultTimestamp, getResultVideoId } from '../utils/results'
+import { getSubmissionFrame, getSubmissionKey, getSubmissionVideoId } from '../utils/submission'
 
 function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargin = '400px') {
   const [isIntersecting, setIntersecting] = useState(false)
@@ -25,30 +26,32 @@ function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargi
 }
 
 export const ResultCard = memo(({ result }: { result: SearchResult }) => {
-  const { recheckList, setPreviewResult, setPlayingVideo, addToast, mode, trakeState, metadataVisibility } = useStore()
+  const { recheckList, setPreviewResult, setPlayingVideo, addToast, mode, trakeState, metadataVisibility, setTrakeSelectedVideo } = useStore()
 
   const cardRef = useRef<HTMLDivElement>(null)
   const isVisible = useIntersectionObserver(cardRef, '320px')
   
   const [imgLoaded, setImgLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
+  const [frameOrderCopied, setFrameOrderCopied] = useState(false)
 
   // ── Mode-aware selection state ───────────────────────────────
   // KIS/QA: only highlight if the candidate was added IN the current mode
+  const submissionKey = getSubmissionKey(result)
+  const candidateVideoId = getSubmissionVideoId(result)
   const isInCurrentModeList = (mode === 'KIS' || mode === 'QA')
-    ? recheckList.some((r) => r.id === result.id && r.answerType === mode)
+    ? recheckList.some((r) => getSubmissionKey(r) === submissionKey && r.answerType === mode)
     : false
 
   // TRAKE: check if this result's video is the selectedVideoId
   const isTrakeVideo = mode === 'TRAKE' && !!trakeState.selectedVideoId
-    && result.payload.video_id === trakeState.selectedVideoId
+    && candidateVideoId === trakeState.selectedVideoId
 
   // TRAKE: check if this exact frame is assigned to an event slot
   const trakeEventLabel = mode === 'TRAKE'
     ? trakeState.events.find(e =>
         e.selectedCandidate &&
-        e.selectedCandidate.payload.video_id === result.payload.video_id &&
-        String(e.selectedCandidate.payload.frame_id) === String(result.payload.frame_id)
+        getSubmissionKey(e.selectedCandidate) === submissionKey
       )?.label ?? null
     : null
 
@@ -58,6 +61,7 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   const keyframeImageUrl = getImageUrl(imagePath)
   const videoId = getResultVideoId(result)
   const frameId = getResultFrameId(result)
+  const frameOrder = getSubmissionFrame(result)
   const timestamp = getResultTimestamp(result)
   const caption = getResultCaption(result)
   const showFps = metadataVisibility.fps !== false
@@ -69,8 +73,16 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
 
   const handleCopyId = (e: React.MouseEvent) => {
     e.stopPropagation()
-    navigator.clipboard.writeText(`${result.payload.video_id},${result.payload.frame_id}`)
-    addToast('Copied frame ID', 'success')
+    if (frameOrder == null) {
+      addToast('Cannot copy: frame_order is missing', 'error')
+      return
+    }
+    navigator.clipboard.writeText(String(frameOrder))
+      .then(() => {
+        setFrameOrderCopied(true)
+        window.setTimeout(() => setFrameOrderCopied(false), 1200)
+      })
+      .catch(() => addToast('Copy failed', 'error'))
   }
 
   const handlePreview = (e: React.MouseEvent) => {
@@ -78,23 +90,24 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
     setPreviewResult(result)
   }
 
-  const handleAddRecheck = async (e: React.MouseEvent) => {
+  const handleAddRecheck = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (isRechecked) return
     try {
-      const mode = useStore.getState().mode
-      const answerType = mode as any
-      
-      const item = {
-        id: result.id || `${result.payload?.video_id}_${result.payload?.frame_id}_${Date.now()}`,
-        img_link: imagePath,
-        payload: result.payload,
-        answerType
+      if (mode === 'TRAKE') {
+        const nextVideoId = videoId?.replace(/\.mp4$/i, '')
+        if (!nextVideoId) {
+          addToast('Cannot use video: video_id is missing', 'error')
+          return
+        }
+        if (trakeState.selectedVideoId && trakeState.selectedVideoId !== nextVideoId) {
+          const replace = window.confirm(`Replace TRAKE Video ID ${trakeState.selectedVideoId} with ${nextVideoId}?`)
+          if (!replace) return
+        }
+        setTrakeSelectedVideo(nextVideoId)
+        addToast(`TRAKE Video ID set to ${nextVideoId}`, 'success')
+        return
       }
-      
-      const { api } = await import('../api')
-      api.addRecheck(item).catch(console.error)
-
       useStore.getState().addCandidate(result)
     } catch (err) {
       console.error(err)
@@ -173,8 +186,8 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                 )}
                 title={
                   mode === 'TRAKE'
-                    ? (trakeState.stage === 1 ? `Select ${result.payload.video_id} as TRAKE video` : `Assign to active event`)
-                    : 'Add to Answer Builder'
+                    ? 'Use this result video for TRAKE'
+                    : 'Add to CSV'
                 }
               >
                 {trakeEventLabel ? <CheckCircle size={14} /> : isRechecked ? <CheckCircle size={14} /> : <Plus size={14} />}
@@ -206,24 +219,49 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
           </div>
 
           <div className="p-2 text-[10px] text-slate-400 font-mono flex flex-col gap-1.5 bg-slate-900/50 flex-1">
-            <div className="flex justify-between items-center gap-1">
-              <span className="truncate text-slate-300 font-medium font-sans flex-1" title={result.payload?.video_id}>
-                {videoId || result.payload?.video_id}
-              </span>
-              <button className="bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700 text-[9px] shrink-0 cursor-copy hover:text-white" onClick={handleCopyId} title="Copy ID">
-                {frameId}
+            <div className="flex justify-between items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-slate-300 font-medium font-sans" title={videoId}>
+                  Video: {videoId || result.payload?.video_id}
+                </div>
+                <div className={`text-[10px] font-mono ${frameOrder == null ? 'text-red-400' : 'text-blue-300'}`}>
+                  Frame Idx: {frameOrder ?? 'missing'}
+                </div>
+                {frameId && (
+                  <div className="text-[8px] text-slate-600 font-mono">
+                    keyframe {frameId}
+                  </div>
+                )}
+              </div>
+              <button
+                className={clsx(
+                  'px-2 py-1 rounded border text-[9px] shrink-0 font-bold uppercase transition-colors',
+                  isRechecked || trakeEventLabel
+                    ? 'bg-emerald-900/40 border-emerald-700/60 text-emerald-300'
+                    : 'bg-blue-600/20 hover:bg-blue-600/40 border-blue-500/50 text-blue-300'
+                )}
+                onClick={handleAddRecheck}
+                title={mode === 'TRAKE' ? 'Use this result video for TRAKE' : 'Add to active CSV'}
+              >
+                {isRechecked || trakeEventLabel ? 'Added' : mode === 'TRAKE' ? 'Use Video' : '+ Add'}
               </button>
             </div>
 
             <div className="flex flex-wrap gap-1 mt-0.5">
+              <button
+                disabled={frameOrder == null}
+                className={clsx(
+                  'bg-slate-800 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider',
+                  frameOrder == null ? 'text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-400 hover:text-white cursor-copy'
+                )}
+                onClick={handleCopyId}
+                title="Copy payload.frame_order"
+              >
+                {frameOrderCopied ? 'Copied' : 'Copy Frame Order'}
+              </button>
               <span className="bg-slate-800 text-slate-300 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider">
                 {formatSeconds(timestamp)}
               </span>
-              {typeof result.payload?.frame_order === 'number' && (
-                <span className="bg-slate-800 text-slate-400 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider">
-                  F{result.payload.frame_order}
-                </span>
-              )}
               {showFps && typeof result.payload?.fps === 'number' && (
                 <span className="bg-slate-800 text-slate-400 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider">
                   {result.payload.fps} FPS

@@ -8,7 +8,10 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '..')
-const aicMediaRoot = path.resolve(repoRoot, 'AIC26')
+const configuredAicRoot = process.env.AIC_DATASET_ROOT?.trim()
+const aicMediaRoot = configuredAicRoot
+  ? path.resolve(path.isAbsolute(configuredAicRoot) ? configuredAicRoot : path.join(repoRoot, configuredAicRoot))
+  : path.resolve(repoRoot, 'AIC26')
 const mediaPrefix = '/__aic_media__/'
 const videoPrefix = '/__aic_video__/'
 const neighborsPrefix = '/__aic_neighbors__/'
@@ -29,7 +32,8 @@ const contentTypes: Record<string, string> = {
 }
 
 function isInsideAic(target: string) {
-  return target === aicMediaRoot || target.startsWith(aicMediaRoot + path.sep)
+  const resolvedTarget = path.resolve(target)
+  return resolvedTarget === aicMediaRoot || resolvedTarget.startsWith(aicMediaRoot + path.sep)
 }
 
 function sendText(res: ServerResponse, statusCode: number, message: string) {
@@ -161,7 +165,7 @@ function parseMapRows(videoId: string) {
 
 function frameFromFile(videoId: string, fileName: string, index: number, mapRows: Record<string, number | null>[]) {
   const frameId = path.parse(fileName).name
-  const imagePath = `AIC26/imgs/${videoId}/${fileName}`
+  const imagePath = `imgs/${videoId}/${fileName}`
   const mapRow = mapRows[index]
   const timeOrder = mapRow?.time_order ?? null
   const timestamp = timeOrder

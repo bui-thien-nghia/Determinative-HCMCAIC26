@@ -4,6 +4,7 @@ import { useStore } from '../../store'
 import type { RecheckItem } from '../../store'
 import { api } from '../../api'
 import { getImageUrl } from '../../utils/media'
+import { getSubmissionFrame, getSubmissionKey } from '../../utils/submission'
 
 const NEAR_DUPLICATE_FRAME_THRESHOLD = 30
 
@@ -27,7 +28,8 @@ export default function KISBuilder() {
     const warnings = []
     
     // Exact duplicate
-    const exactDups = recheckList.filter((r, i) => i !== idx && r.payload.video_id === item.payload.video_id && String(r.payload.frame_id) === String(item.payload.frame_id))
+    const itemKey = getSubmissionKey(item)
+    const exactDups = recheckList.filter((r, i) => i !== idx && getSubmissionKey(r) === itemKey)
     
     if (exactDups.length > 0) {
       warnings.push({ type: 'exact', msg: 'EXACT DUPLICATE' })
@@ -38,8 +40,8 @@ export default function KISBuilder() {
       if (i === idx) return false
       if (r.payload.video_id !== item.payload.video_id) return false
       
-      const frameA = parseInt(String(item.payload.frame_id).replace(/\D/g, ''), 10) || 0
-      const frameB = parseInt(String(r.payload.frame_id).replace(/\D/g, ''), 10) || 0
+      const frameA = getSubmissionFrame(item) || 0
+      const frameB = getSubmissionFrame(r) || 0
       
       return Math.abs(frameA - frameB) <= NEAR_DUPLICATE_FRAME_THRESHOLD && Math.abs(frameA - frameB) > 0
     })
@@ -52,9 +54,10 @@ export default function KISBuilder() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2 custom-scrollbar">
+    <div className="p-3 flex flex-col gap-2">
       {recheckList.map((item, idx) => {
         const warnings = getValidationWarnings(item, idx)
+        const frameOrder = getSubmissionFrame(item)
         
         return (
           <div 
@@ -114,8 +117,9 @@ export default function KISBuilder() {
                 <div className="text-xs font-semibold text-slate-200 truncate" title={item.payload.video_id}>
                   {item.payload.video_id}
                 </div>
-                <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-2">
-                  <span>{item.payload.frame_id}</span>
+                <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex flex-col gap-0.5">
+                  <span>Frame Idx <span className="text-slate-200 font-semibold">{frameOrder ?? 'missing'}</span></span>
+                  <span className="text-slate-600">keyframe {String(item.payload.frame_id)}</span>
                 </div>
                 
                 <div className="mt-1 flex flex-wrap gap-1">

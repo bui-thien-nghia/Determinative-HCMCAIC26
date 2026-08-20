@@ -4,6 +4,7 @@ import { useStore } from '../../store'
 import type { RecheckItem } from '../../store'
 import { api } from '../../api'
 import { getImageUrl } from '../../utils/media'
+import { MAX_QA_ANSWER_LENGTH, getSubmissionFrame } from '../../utils/submission'
 
 export default function QABuilder() {
   const { recheckList, removeFromRecheckList, reorderRecheckItem, addToast, updateRecheckItemAnswer } = useStore()
@@ -42,14 +43,19 @@ export default function QABuilder() {
     if (!item.answer || !item.answer.trim()) {
       warnings.push({ type: 'error', msg: 'ANSWER REQUIRED' })
     }
+    if ((item.answer || '').length > MAX_QA_ANSWER_LENGTH) {
+      warnings.push({ type: 'error', msg: 'ANSWER TOO LONG' })
+    }
     return warnings
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2 custom-scrollbar">
+    <div className="p-3 flex flex-col gap-2">
       {recheckList.map((item, idx) => {
         const warnings = getValidationWarnings(item)
         const hasError = warnings.some(w => w.type === 'error')
+        const frameOrder = getSubmissionFrame(item)
+        const answerLength = (item.answer || '').length
         
         return (
           <div 
@@ -111,8 +117,9 @@ export default function QABuilder() {
                 <div className="text-xs font-semibold text-slate-200 truncate" title={item.payload.video_id}>
                   {item.payload.video_id}
                 </div>
-                <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-2">
-                  <span>{item.payload.frame_id}</span>
+                <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex flex-col gap-0.5">
+                  <span>Frame Idx <span className="text-slate-200 font-semibold">{frameOrder ?? 'missing'}</span></span>
+                  <span className="text-slate-600">keyframe {String(item.payload.frame_id)}</span>
                 </div>
                 
                 <div className="mt-1 flex flex-wrap gap-1">
@@ -160,11 +167,14 @@ export default function QABuilder() {
                 value={item.answer || ''}
                 onChange={(e) => updateRecheckItemAnswer(item.id, e.target.value)}
                 placeholder="Answer (EN/VN)..."
-                maxLength={200}
+                maxLength={MAX_QA_ANSWER_LENGTH}
                 className={`flex-1 bg-slate-900 border rounded px-2 py-1 text-xs text-white focus:outline-none transition-colors ${
                   hasError ? 'border-red-500/50 focus:border-red-500' : 'border-slate-700 focus:border-blue-500'
                 }`}
               />
+              <span className={`w-14 text-right text-[9px] font-mono ${answerLength > MAX_QA_ANSWER_LENGTH ? 'text-red-400' : 'text-slate-500'}`}>
+                {answerLength} / {MAX_QA_ANSWER_LENGTH}
+              </span>
               <button
                 type="button"
                 onClick={() => handleApplyToSameVideo(item.payload.video_id, item.answer || '')}

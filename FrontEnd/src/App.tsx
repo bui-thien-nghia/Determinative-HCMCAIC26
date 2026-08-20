@@ -171,16 +171,16 @@ function App() {
         </div>
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
-        <aside className="w-75 shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col z-10">
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        <aside className="w-75 min-h-0 shrink-0 border-r border-slate-800 bg-slate-900 flex flex-col z-10">
           <SearchPanel />
         </aside>
 
-        <main className="flex-1 min-w-0 bg-slate-950 relative">
+        <main className="flex-1 min-h-0 min-w-0 bg-slate-950 relative">
           <ResultGrid />
         </main>
 
-        <aside className="w-85 shrink-0 border-l border-slate-800 bg-slate-900 flex flex-col z-10">
+        <aside className="w-85 min-h-0 shrink-0 border-l border-slate-800 bg-slate-900 flex flex-col z-10">
           <RecheckPanel />
         </aside>
       </div>

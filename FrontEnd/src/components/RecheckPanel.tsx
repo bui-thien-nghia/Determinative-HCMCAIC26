@@ -1,99 +1,152 @@
-import { useState } from 'react'
-import { Download, Copy, Trash } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Archive, Check, Download, FilePlus2, PackageCheck, Trash } from 'lucide-react'
 import { useStore } from '../store'
-import { api } from '../api'
 
 import KISBuilder from './answer-builder/KISBuilder'
 import QABuilder from './answer-builder/QABuilder'
 import TRAKEBuilder from './answer-builder/TRAKEBuilder'
+import {
+  MAX_SUBMISSION_ROWS,
+  createSubmissionZip,
+  detectQueryTypeFromName,
+  downloadBlob,
+  filenameForQuery,
+  sanitizeQueryName,
+  validateSubmission,
+  type SubmissionQueryType,
+} from '../utils/submission'
 
-function escapeCsvCell(value: unknown): string {
-  const text = String(value ?? '')
-  const mustQuote = text.includes(',') || text.includes('"') || text.includes('\n') || text.includes('\r')
-  const escaped = text.replace(/"/g, '""')
-  return mustQuote ? `"${escaped}"` : escaped
+const queryTypes: SubmissionQueryType[] = ['KIS', 'QA', 'TRAKE']
+
+function displayType(type: SubmissionQueryType) {
+  return type === 'QA' ? 'Q&A' : type
+}
+
+function suffixFor(type: SubmissionQueryType) {
+  return type === 'QA' ? 'qa' : type.toLowerCase()
+}
+
+function nameForType(currentName: string, nextType: SubmissionQueryType) {
+  const cleaned = sanitizeQueryName(currentName) || 'query-1'
+  const replaced = cleaned.replace(/-(kis|qa|trake)$/i, '')
+  return `${replaced}-${suffixFor(nextType)}`
 }
 
 export default function RecheckPanel() {
-  const { recheckList, trakeState, clearRecheckList, mode, addToast, addCandidate } = useStore()
+  const {
+    recheckList,
+    trakeState,
+    clearRecheckList,
+    mode,
+    setMode,
+    searchResults,
+    addToast,
+    addCandidate,
+    submissionQueryName,
+    setSubmissionQueryName,
+    submissionPackage,
+    addSubmissionPackageFile,
+    removeSubmissionPackageFile,
+    clearSubmissionPackage,
+  } = useStore()
   const [isDragOver, setIsDragOver] = useState(false)
+  const queryType = mode as SubmissionQueryType
+  const filename = filenameForQuery(submissionQueryName, queryType)
+  const validation = useMemo(
+    () => validateSubmission(queryType, recheckList, trakeState),
+    [queryType, recheckList, trakeState],
+  )
+  const rowsUsed = queryType === 'TRAKE' ? validation.rows : recheckList.length
+  const selectedEvents = trakeState.events.filter((event) => String(event.frameOrder || '').trim()).length
 
-  const handleClearAll = async () => {
-    if (mode === 'TRAKE') {
-      if (!window.confirm('Clear all TRAKE events?')) return
+  const handleTypeChange = (nextType: SubmissionQueryType) => {
+    setMode(nextType)
+    setSubmissionQueryName(nameForType(submissionQueryName, nextType))
+  }
+
+  const handleQueryNameChange = (value: string) => {
+    const cleaned = value.replace(/\.csv$/i, '')
+    setSubmissionQueryName(cleaned)
+    const detected = detectQueryTypeFromName(cleaned)
+    if (detected && detected !== queryType) {
+      setMode(detected)
+    }
+  }
+
+  const handleDownloadCsv = () => {
+    if (!validation.valid) return
+    downloadBlob(new Blob([`${validation.csv}\n`], { type: 'text/csv;charset=utf-8' }), filename)
+    addToast(`Downloaded ${filename}`, 'success')
+  }
+
+  const handleSaveToPackage = () => {
+    if (!validation.valid) return
+    if (submissionPackage.some((file) => file.filename === filename)) {
+      if (!window.confirm(`${filename} already exists in the package. Replace it?`)) return
+    }
+    addSubmissionPackageFile({
+      filename,
+      queryName: sanitizeQueryName(submissionQueryName),
+      queryType,
+      csv: validation.csv,
+      rows: validation.rows,
+      savedAt: Date.now(),
+    })
+    addToast(`${filename} saved to package`, 'success')
+  }
+
+  const handleValidateAll = () => {
+    if (submissionPackage.length === 0) {
+      addToast('Package is empty', 'error')
+      return
+    }
+    addToast(`${submissionPackage.length} CSV file(s) valid for submission.zip`, 'success')
+  }
+
+  const handleDownloadZip = () => {
+    if (submissionPackage.length === 0) return
+    const zip = createSubmissionZip(submissionPackage)
+    downloadBlob(zip, 'submission.zip')
+    addToast('Downloaded submission.zip', 'success')
+  }
+
+  const handleClearCurrent = () => {
+    if (!window.confirm('Clear the current submission query?')) return
+    if (queryType === 'TRAKE') {
       useStore.getState().clearAllTrakeEvents()
-      addToast('All TRAKE events cleared', 'info')
+    } else {
+      clearRecheckList()
+    }
+    addToast('Current query cleared', 'info')
+  }
+
+  const handleClearPackage = () => {
+    if (!window.confirm('Clear all saved CSV files from the submission package?')) return
+    clearSubmissionPackage()
+    addToast('Submission package cleared', 'info')
+  }
+
+  const handleBulkAdd = (count: number | 'all') => {
+    if (queryType === 'TRAKE') return
+    const available = Math.max(0, MAX_SUBMISSION_ROWS - recheckList.length)
+    if (available === 0) {
+      addToast('Maximum 100 rows allowed', 'error')
       return
     }
 
-    if (!window.confirm('Clear all candidates?')) return
-    for (const item of recheckList) {
-      api.removeRecheck(item.id).catch(console.error)
-    }
-    clearRecheckList()
-    addToast('All candidates cleared', 'info')
-  }
-
-  const generateExportData = () => {
-    let data = ''
-
-    if (mode === 'TRAKE') {
-      const vid = trakeState.selectedVideoId
-      if (!vid) return { data: '', exportMode: mode }
-      
-      const frames = trakeState.events
-        .filter(e => e.selectedCandidate)
-        .map(e => e.selectedCandidate!.payload.frame_id)
-        
-      const rows = [[vid, ...frames].map(escapeCsvCell).join(',')]
-      data = rows.join('\n')
-    } else if (mode === 'QA') {
-      const items = recheckList.slice(0, 100)
-      
-      const missingAnswers = items.filter(i => !i.answer || !i.answer.trim())
-      if (missingAnswers.length > 0) {
-        addToast(`${missingAnswers.length} candidates are missing answers`, 'error')
-        return { data: '', exportMode: mode, error: true }
-      }
-      
-      data = items.map(item =>
-        [item.payload.video_id, item.payload.frame_id, item.answer || ''].map(escapeCsvCell).join(',')
-      ).join('\n')
-    } else {
-      const items = recheckList.slice(0, 100)
-      data = items.map(item =>
-        [item.payload.video_id, item.payload.frame_id].map(escapeCsvCell).join(',')
-      ).join('\n')
+    const requested = count === 'all' ? searchResults.length : count
+    const candidates = searchResults.slice(0, Math.min(requested, available))
+    if (candidates.length === 0) {
+      addToast('No search results to add', 'error')
+      return
     }
 
-    return { data, exportMode: mode }
-  }
-
-  const handleExport = () => {
-    if (mode !== 'TRAKE' && recheckList.length === 0) return
-    if (mode === 'TRAKE' && trakeState.events.every(e => !e.selectedCandidate)) return
-    
-    const { data, exportMode, error } = generateExportData()
-    if (error || !data) return
-    
-    const csvContent = 'data:text/csv;charset=utf-8,' + encodeURIComponent(data)
-
-    const a = document.createElement('a')
-    a.href = csvContent
-    a.download = `answer-${exportMode.toLowerCase()}.csv`
-    a.click()
-    addToast('CSV exported', 'success')
-  }
-
-  const handleCopy = () => {
-    if (mode !== 'TRAKE' && recheckList.length === 0) return
-    if (mode === 'TRAKE' && trakeState.events.every(e => !e.selectedCandidate)) return
-    
-    const { data, error } = generateExportData()
-    if (error || !data) return
-    
-    navigator.clipboard.writeText(data)
-    addToast('Copied answer', 'success')
+    const before = useStore.getState().recheckList.length
+    for (const result of candidates) {
+      useStore.getState().addCandidate(result, { quiet: true })
+    }
+    const added = useStore.getState().recheckList.length - before
+    addToast(added > 0 ? `Added ${added} row(s)` : 'No new valid rows added', added > 0 ? 'success' : 'error')
   }
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -117,164 +170,193 @@ export default function RecheckPanel() {
       addCandidate(result)
     } catch (err) {
       console.error(err)
+      addToast('Drop failed', 'error')
     }
-  }
-  
-  const getHeaderContent = () => {
-    if (mode === 'TRAKE') {
-      const { stage, selectedVideoId, events } = trakeState
-      const selectedCount = events.filter(e => e.selectedCandidate).length
-      const totalCount = events.length
-
-      return (
-        <>
-          <h2 className="font-bold text-slate-100 flex items-center gap-2 tracking-wide text-xs">
-            TRAKE
-            <span className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest">
-              <span className={`px-1.5 py-0.5 rounded ${stage === 1 ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>1 Retrieval</span>
-              <span className="text-slate-600">→</span>
-              <span className={`px-1.5 py-0.5 rounded ${stage === 2 ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>2 Alignment</span>
-            </span>
-          </h2>
-          {stage === 2 && selectedVideoId && (
-            <span className="text-[10px] text-blue-400 font-mono truncate max-w-25" title={selectedVideoId}>
-              {selectedVideoId}
-            </span>
-          )}
-          {stage === 2 && totalCount > 0 && (
-            <span className="bg-blue-600/20 text-blue-400 font-mono text-[10px] px-2 py-0.5 rounded border border-blue-500/30 shrink-0">
-              {selectedCount}/{totalCount}
-            </span>
-          )}
-        </>
-      )
-    }
-
-    return (
-      <>
-        <h2 className="font-bold text-slate-100 flex items-center gap-2 tracking-wide text-xs">
-          ANSWER BUILDER
-          <span className="bg-blue-600/20 text-blue-400 font-mono text-[10px] px-2 py-0.5 rounded border border-blue-500/30">
-            {recheckList.length} / 100
-          </span>
-        </h2>
-        <span className="text-[10px] text-slate-500 uppercase tracking-wider">{mode} Mode</span>
-      </>
-    )
-  }
-
-  const getValidationSummary = () => {
-    if (mode === 'TRAKE') {
-      const { stage, events } = trakeState
-      if (stage === 1) {
-        return (
-          <div className="text-[9px] text-slate-500 uppercase flex justify-between">
-            <span>Stage 1 — Select video</span>
-          </div>
-        )
-      }
-      const selectedCount = events.filter(e => e.selectedCandidate).length
-      let hasTemporalError = false
-      let lastFrame = -1
-      for (const evt of events) {
-        if (!evt.selectedCandidate) continue
-        const f = parseInt(String(evt.selectedCandidate.payload.frame_id).replace(/\D/g, ''), 10) || 0
-        if (lastFrame !== -1 && f <= lastFrame) { hasTemporalError = true; break }
-        lastFrame = f
-      }
-      return (
-        <div className="text-[9px] text-slate-500 uppercase flex justify-between">
-          <span>{selectedCount} / {events.length} events</span>
-          {selectedCount > 1 && (
-            <span className={hasTemporalError ? 'text-red-400' : 'text-emerald-400'}>
-              Temporal order {hasTemporalError ? 'invalid' : 'valid'}
-            </span>
-          )}
-        </div>
-      )
-    }
-    
-    if (mode === 'QA') {
-      const missingCount = recheckList.filter(i => !i.answer || !i.answer.trim()).length
-      return (
-        <div className="text-[9px] text-slate-500 uppercase flex justify-between">
-          <span>{recheckList.length} candidates</span>
-          {missingCount > 0 && <span className="text-red-400">{missingCount} missing answers</span>}
-        </div>
-      )
-    }
-    
-    return (
-      <div className="text-[9px] text-slate-500 uppercase flex justify-between">
-        <span>{recheckList.length} candidates</span>
-      </div>
-    )
-  }
-
-  const isExportDisabled = () => {
-    if (mode === 'TRAKE') {
-      const { stage, events } = trakeState
-      if (stage === 1) return true
-      return events.length === 0 || events.every(e => !e.selectedCandidate)
-    }
-    return recheckList.length === 0
   }
 
   return (
-    <div 
-      className={`flex flex-col h-full bg-slate-900 border-l border-slate-800 text-sm overflow-hidden transition-colors ${isDragOver ? 'ring-2 ring-inset ring-blue-500 bg-slate-800/80' : ''}`}
+    <div
+      className={`flex h-full min-h-0 flex-col bg-slate-900 border-l border-slate-800 text-sm overflow-y-auto overflow-x-hidden custom-scrollbar [scrollbar-gutter:stable] transition-colors ${isDragOver ? 'ring-2 ring-inset ring-blue-500 bg-slate-800/80' : ''}`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="p-4 border-b border-slate-800 bg-slate-950/50 flex flex-col gap-3 shrink-0">
-        <div className="flex justify-between items-center">
-          {getHeaderContent()}
+      <div className="p-3 border-b border-slate-800 bg-slate-950/50 flex flex-col gap-3">
+        <div>
+          <h2 className="font-bold text-slate-100 tracking-wide text-xs uppercase">Submission Workspace</h2>
+          <div className="text-[10px] text-slate-500 mt-0.5">BTC Frame Idx = payload.frame_order</div>
         </div>
 
-        <div className="flex gap-2">
+        <div className="grid grid-cols-3 bg-slate-900 border border-slate-800 rounded overflow-hidden">
+          {queryTypes.map((type) => (
+            <button
+              key={type}
+              onClick={() => handleTypeChange(type)}
+              className={`py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                queryType === type ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              {displayType(type)}
+            </button>
+          ))}
+        </div>
+
+        <div>
+          <label className="text-[9px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Query Name</label>
+          <input
+            type="text"
+            value={submissionQueryName}
+            onChange={(e) => handleQueryNameChange(e.target.value)}
+            placeholder={`query-1-${suffixFor(queryType)}`}
+            className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500 text-xs"
+          />
+          <div className="text-[9px] text-slate-500 mt-1 font-mono truncate">{filename}</div>
+        </div>
+
+        {queryType !== 'TRAKE' && (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between text-[9px] text-slate-500 uppercase tracking-wider">
+              <span>Rows: {rowsUsed} / {MAX_SUBMISSION_ROWS}</span>
+              <span>{searchResults.length} result(s) available</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {[
+                ['Top 5', 5],
+                ['Top 10', 10],
+                ['Top 20', 20],
+                ['All', 'all'],
+              ].map(([label, count]) => (
+                <button
+                  key={label}
+                  onClick={() => handleBulkAdd(count as number | 'all')}
+                  disabled={searchResults.length === 0 || rowsUsed >= MAX_SUBMISSION_ROWS}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-1.5 py-1 rounded text-[9px] font-semibold uppercase border border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {queryType === 'TRAKE' && (
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider flex justify-between">
+            <span>Events: {selectedEvents} / {trakeState.events.length}</span>
+            <span>Rows: {validation.rows} / {MAX_SUBMISSION_ROWS}</span>
+          </div>
+        )}
+
+        <div className={`rounded border px-2 py-1.5 text-[10px] ${
+          validation.valid ? 'border-emerald-700/50 bg-emerald-950/20 text-emerald-300' : 'border-red-900/50 bg-red-950/20 text-red-300'
+        }`}>
+          {validation.valid ? (
+            <div className="flex items-center gap-1.5 font-semibold uppercase tracking-wider">
+              <Check size={12} /> Ready to export
+            </div>
+          ) : (
+            <div className="flex flex-col gap-0.5">
+              {validation.errors.slice(0, 3).map((error) => <span key={error}>{error}</span>)}
+              {validation.errors.length > 3 && <span>+ {validation.errors.length - 3} more error(s)</span>}
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
           <button
-            onClick={handleExport}
-            disabled={isExportDisabled()}
-            className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1.5 rounded text-[10px] font-semibold uppercase flex items-center justify-center gap-1.5 transition-colors border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleDownloadCsv}
+            disabled={!validation.valid}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1.5 rounded text-[10px] font-semibold uppercase flex items-center justify-center gap-1.5 transition-colors border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Download size={12} /> CSV
           </button>
           <button
-            onClick={handleCopy}
-            disabled={isExportDisabled()}
-            className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1.5 rounded text-[10px] font-semibold uppercase flex items-center justify-center gap-1.5 transition-colors border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleSaveToPackage}
+            disabled={!validation.valid}
+            className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 px-2 py-1.5 rounded text-[10px] font-semibold uppercase flex items-center justify-center gap-1.5 transition-colors border border-blue-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Copy size={12} /> Copy
+            <FilePlus2 size={12} /> Save
           </button>
           <button
-            onClick={handleClearAll}
-            disabled={isExportDisabled()}
-            className="flex-1 bg-red-900/20 hover:bg-red-900/40 text-red-400 px-2 py-1.5 rounded text-[10px] font-semibold uppercase flex items-center justify-center gap-1.5 transition-colors border border-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={handleClearCurrent}
+            disabled={queryType === 'TRAKE'
+              ? !trakeState.selectedVideoId && trakeState.events.every((event) => !String(event.frameOrder || '').trim())
+              : recheckList.length === 0}
+            className="bg-red-900/20 hover:bg-red-900/40 text-red-400 px-2 py-1.5 rounded text-[10px] font-semibold uppercase flex items-center justify-center gap-1.5 transition-colors border border-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Trash size={12} /> Clear
           </button>
         </div>
-        
-        {getValidationSummary()}
       </div>
 
-      {/* Builder content area — position: relative so empty states are scoped here */}
-      <div className="relative flex-1 overflow-hidden">
-        {mode === 'KIS' && <KISBuilder />}
-        {mode === 'QA' && <QABuilder />}
-        {mode === 'TRAKE' && <TRAKEBuilder />}
+      <div className={`relative ${queryType !== 'TRAKE' && recheckList.length === 0 ? 'min-h-48' : ''}`}>
+        {queryType === 'KIS' && <KISBuilder />}
+        {queryType === 'QA' && <QABuilder />}
+        {queryType === 'TRAKE' && <TRAKEBuilder />}
 
-        {mode !== 'TRAKE' && recheckList.length === 0 && (
+        {queryType !== 'TRAKE' && recheckList.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-3 pointer-events-none p-4">
             <div className={`w-12 h-12 rounded-full border border-dashed flex items-center justify-center transition-colors ${isDragOver ? 'border-blue-500 text-blue-500 bg-blue-500/10' : 'border-slate-700'}`}>
               <span className="text-xl font-light">{isDragOver ? '↓' : '+'}</span>
             </div>
             <p className="text-xs text-center max-w-50">
-              {isDragOver ? 'Drop to add candidate' : mode === 'QA' ? <>No Q&A candidates added. Add a frame, then enter an answer.</> : <>No candidates added. Press <strong className="text-slate-400">'+'</strong> or drag a frame here.</>}
+              {isDragOver ? 'Drop to add result' : queryType === 'QA' ? <>No Q&A rows. Add a frame, then enter an answer.</> : <>No KIS rows. Click <strong className="text-slate-400">+ Add</strong> or drag a frame here.</>}
             </p>
           </div>
         )}
+      </div>
+
+      <div className="border-t border-slate-800 bg-slate-950/60 p-3 flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <h3 className="text-[10px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Archive size={12} /> Submission Package
+          </h3>
+          <span className="text-[9px] text-slate-500">{submissionPackage.length} CSV</span>
+        </div>
+
+        <div className="min-h-12 max-h-22 overflow-y-auto custom-scrollbar flex flex-col gap-1">
+          {submissionPackage.length === 0 ? (
+            <div className="text-[10px] text-slate-600 italic">No completed CSVs saved.</div>
+          ) : (
+            submissionPackage.map((file) => (
+              <div key={file.filename} className="flex items-center gap-2 text-[10px] bg-slate-900 border border-slate-800 rounded px-2 py-1">
+                <span className="text-emerald-400">✓</span>
+                <span className="flex-1 truncate font-mono text-slate-300" title={file.filename}>{file.filename}</span>
+                <span className="text-slate-600">{file.rows}r</span>
+                <button
+                  onClick={() => removeSubmissionPackageFile(file.filename)}
+                  className="text-slate-600 hover:text-red-400 transition-colors"
+                  title="Remove from package"
+                >
+                  <Trash size={10} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            onClick={handleValidateAll}
+            disabled={submissionPackage.length === 0}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1.5 rounded text-[9px] font-semibold uppercase border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+          >
+            <PackageCheck size={11} /> Validate
+          </button>
+          <button
+            onClick={handleDownloadZip}
+            disabled={submissionPackage.length === 0}
+            className="bg-blue-600 hover:bg-blue-500 text-white px-2 py-1.5 rounded text-[9px] font-semibold uppercase disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+          >
+            <Download size={11} /> ZIP
+          </button>
+          <button
+            onClick={handleClearPackage}
+            disabled={submissionPackage.length === 0}
+            className="bg-red-900/20 hover:bg-red-900/40 text-red-400 px-2 py-1.5 rounded text-[9px] font-semibold uppercase border border-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Clear
+          </button>
+        </div>
       </div>
     </div>
   )
