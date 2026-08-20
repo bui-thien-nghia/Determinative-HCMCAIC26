@@ -330,7 +330,7 @@ class TranscriptAndFeatureProcessor:
             ): pass
 
 
-class FeatureCompactor:
+class FeaturePackager:
     def __init__(self, feats_dir, save_dir):
         self.feats_dir = Path(feats_dir)
         self.save_dir = Path(save_dir)
@@ -388,7 +388,7 @@ class FeatureCompactor:
             ): pass
 
 
-class InfoCompactor:
+class InfoPackager:
     def __init__(self, map_dir, save_dir):
         self.map_dir = Path(map_dir)
         self.save_dir = Path(save_dir)
@@ -398,13 +398,14 @@ class InfoCompactor:
 
     def load_maps(self):
         map_paths = self.map_dir.rglob("**/*.csv")
-        for path in tqdm(map_paths, desc="Loading maps"):
+        for path in tqdm(list(map_paths), desc="Loading maps"):
             vid_id = path.stem
             if vid_id not in self.maps: self.maps[vid_id] = {}
             map = pd.read_csv(path).to_dict(orient="records")
             for frame_info in map:
                 frame_info["vid_id"] = vid_id
                 frame_id = f"{frame_info["frame_id"]:03d}"
+                frame_info["frame_id"] = frame_id
                 self.maps[vid_id][frame_id] = frame_info
 
     def form_key_value_dict(self, path: Path, keys_and_column_names: list[tuple[str, str]] = []):
