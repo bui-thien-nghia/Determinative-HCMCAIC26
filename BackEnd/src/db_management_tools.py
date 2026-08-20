@@ -511,3 +511,24 @@ class QueryManager:
 
         # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="The main script for uploading and querying with Qdrant database")
+
+    # parser.add_argument("-t", "--task", type=str, required=True, choices=["upload", "query"], help="The task to execute with this script")
+    parser.add_argument("--dataset_dir", type=str, required=True, help="Path to the dataset directory")
+    parser.add_argument("--collection_name", type=str, required=True, help="The name of your collection")
+    parser.add_argument("--external_vid_dir", type=str, default="vids", help="The video directory, if you don't store the videos the dataset directory")
+    parser.add_argument("--batch_size", type=int, default=1, help="Number of workers to upload your dataset to Qdrant database")
+    parser.add_argument("--num_workers", type=int, default=256, help="Number of workers to upload your dataset to Qdrant database")
+
+    args = parser.parse_args()
+
+    data_loader = DataLoader(dataset_dir=args.dataset_dir, vid_dir=args.external_vid_dir)
+    data_loader.create_and_fill_database(
+        collection_name=args.collection_name,
+        upload_batch_size=args.batch_size,
+        upload_num_workers=args.num_workers
+    )

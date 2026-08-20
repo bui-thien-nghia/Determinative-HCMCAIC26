@@ -1,25 +1,32 @@
 # AIC2026 Retrieval Frontend Starter
+## Overview
+This web is designed to support our research method in multimodal zero-shot keyframe-based video moment retrieval (VMR).
 
-Frontend prototype copied from the old AIC_LITE style and adjusted to run without backend.
+The web is comprised on 2 main components:
+- `BackEnd/`: where the entire pipeline and the web's API stay
+- `FrontEnd/`: an interactive frontend that supports multi-purposed and cooperative retrieval experience.
 
 ## Run
 
+Clone the repository and move to the folder:
+
 ```bash
-npm install
-npm run dev
+cd Determinatives-HCMCAIC26
+```
+
+Install the dependencies of the back-end:
+
+```bash
+pip install -r BackEnd/requirements.txt
+```
+
+(INTERNAL INSTRUCTION, REMOVE AFTER CONTEST) Download the dataset and run the uploading script as in the `example.ipynb`:
+
+Install front-end's dependencies and run the front-end setup
+
+```bash
+npm --prefix FrontEnd install
+npm --prefix FrontEnd run start:all
 ```
 
 Then open the Vite URL, usually http://localhost:5173.
-
-## What is included
-
-- React + TypeScript + Vite
-- Tailwind CSS v4
-- Zustand store
-- Mock API in `src/api.ts`
-- Mock multimedia results in `src/data/mockResults.ts`
-- Search panel, result grid, result card, preview modal, answer builder
-
-## Later backend integration
-
-Replace the mock implementation in `src/api.ts` with real `fetch('/api/search/')` calls.
