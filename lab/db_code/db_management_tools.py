@@ -1,4 +1,3 @@
-import json
 import pandas as pd
 import numpy as np
 import uuid
@@ -91,38 +90,40 @@ class DataLoader:
         ]
 
         self.map_paths_map = {path.stem: str(path) for path in self.dataset_dir.rglob("maps/**/*.csv")} # Maps
-        self.img_paths = [str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")] # Keyframes
+        self.frame_paths_map = {(path.parts[-2], path.stem): str(path) for path in self.dataset_dir.rglob("imgs/**/*.jpg")} # Keyframes
         self.frame_info_map = {}
         self.build_frame_info_map(vid_dir)
 
         print(f"""Dataset record:
 {len(self.map_paths_map)} videos
-{len(self.img_paths)} keyframes
+{len(self.frame_paths_map)} keyframes
 """)
 
 
     def build_frame_info_map(self, vid_dir: str = "vids"):
-        for vid_id in self.map_paths_map.keys():
-            met_path = self.dataset_dir / "mets" / f"{vid_id}.json"
-            map_path = self.dataset_dir / "maps" / f"{vid_id}.csv"
+        for vid_id, map_path in self.map_paths_map.items():
             vid_path = str(Path(vid_dir) / f"{vid_id}.mp4")
-
-            map = pd.read_csv(map_path)
-            with open(met_path, 'r', encoding='utf-8') as f:
-                met = json.load(f)
-                base_yt_link = met["watch_url"]
-            for row in map.to_dict(orient="records"):
+            map = pd.read_csv(map_path).replace({np.nan: None}).to_dict(orient="records")
+            for row in map:
+                vid_id = row["vid_id"]
                 frame_id = f"{row["frame_id"]:03d}"
+                frame_path = self.frame_paths_map[(vid_id, frame_id)]
                 frame_order = int(row["frame_order"])
                 time_order = float(row["time_order"])
                 fps = float(row["fps"])
+                transcript = row["transcript"]
+                base_yt_link = row["base_yt_link"]
                 yt_link = base_yt_link + f"&t={time_order}s"
 
                 self.frame_info_map[(vid_id, frame_id)] = {
+                    "vid_path": vid_path,
+                    "frame_path": frame_path,
+                    "vid_id": vid_id,
+                    "frame_id": frame_id,
                     "frame_order": frame_order,
                     "time_order": time_order,
                     "fps": fps,
-                    "vid_path": vid_path,
+                    "transcript": transcript,
                     "yt_link": yt_link
                 }
 
@@ -135,10 +136,10 @@ class DataLoader:
                 print('Deletion complete.')
             elif confirm_deletion.lower() == 'n':
                 print('Deletion cancelled.')
-                return
+                return False
             else:
                 print('Invalid input')
-                return
+                return False
 
         self.database_client.create_collection(
             collection_name=collection_name,
@@ -157,6 +158,8 @@ class DataLoader:
                 **schema
             )
 
+        return True
+
 
     def list_collections(self):
         names = self.database_client.get_collections()
@@ -169,16 +172,10 @@ class DataLoader:
 
 
     def points_generator(self):
-        for frame_path in self.img_paths:
+        for frame_path in self.frame_paths_map.values():
             vid_id = Path(frame_path).parts[-2]
             frame_id = Path(frame_path).stem
-
-            tran_path = self.dataset_dir / "trans" / vid_id / f"{frame_id}.txt"
             feats_path = self.dataset_dir / "feats" / vid_id / f"{frame_id}.npz"
-
-            # Fetch unloaded data
-            with open(tran_path, 'r', encoding="utf-8") as f:
-                tran = f.read()
             feats = np.load(feats_path)
 
             # Point format
@@ -193,20 +190,14 @@ class DataLoader:
                         values=feats["feat_bgem3_sparse_weights"].tolist()
                     )
                 },
-                payload={
-                    "frame_path": frame_path,
-                    "frame_id": frame_id,
-                    "vid_id": vid_id,
-                    "transcript": tran,
-                    **self.frame_info_map[(vid_id, frame_id)]
-                }
+                payload=self.frame_info_map[(vid_id, frame_id)]
             )
 
 
     def upsert_to_db(self, collection_name: str, batch_size: int = 256, num_workers: int = 1):
         self.database_client.upload_points(
             collection_name=collection_name,
-            points=tqdm(self.points_generator(), total=len(self.img_paths), desc="Uploading dataset to Qdrant"),
+            points=tqdm(self.points_generator(), total=len(self.frame_paths_map), desc="Uploading dataset to Qdrant"),
             batch_size=batch_size,
             parallel=num_workers,
         )
@@ -218,8 +209,8 @@ class DataLoader:
         upload_batch_size: int = 256,
         upload_num_workers: int = 1
     ):
-        self.create_new_collection(collection_name)
-        self.upsert_to_db(
+        created = self.create_new_collection(collection_name)
+        if created: self.upsert_to_db(
             collection_name,
             batch_size=upload_batch_size,
             num_workers=upload_num_workers
@@ -332,7 +323,7 @@ class QueryManager:
     def create_filter(self, key: str, value):
         return models.FieldCondition(
             key=key,
-            match=models.MatchText(text=value)
+            match=models.MatchValue(value=value)
         )
 
 
@@ -520,31 +511,3 @@ class QueryManager:
 
         # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
-
-    #! TO BE REMOVED FROM THIS CLASS
-    def search_on_image(self, collection_name: str, vid_id: str, frame_id: str, search_limit: int = 100):
-        image_point = self.get_points(
-            collection_name,
-            filters=self.create_filters(vid_id=vid_id, frame_id=frame_id),
-            with_vectors=["siglip2_dense"]
-        )
-        if not len(image_point): return []
-        image_point = image_point[0]
-
-        result_points = self.search(
-            collection_name,
-            query=self.create_prefetch(siglip2_dense=image_point.vector["siglip2_dense"], search_limit=search_limit),
-            search_limit=search_limit,
-            using_vectors=["siglip2_dense"]
-        )
-
-        return result_points
-
-
-    #! TO BE REMOVED FROM THIS CLASS
-    def do_filter(self, collection_name: str, key: str, value, pagination_limit: int = 1000):
-        return self.get_points(
-            collection_name,
-            filters=self.create_filters(**{key: value}),
-            pagination_limit=pagination_limit
-        )

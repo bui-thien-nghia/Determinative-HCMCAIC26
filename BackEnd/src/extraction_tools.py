@@ -1,5 +1,7 @@
 import csv
+import json
 import numpy as np
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from sklearn.cluster import AgglomerativeClustering
@@ -328,7 +330,7 @@ class TranscriptAndFeatureProcessor:
             ): pass
 
 
-class FeatureCompactor:
+class FeaturePackager:
     def __init__(self, feats_dir, save_dir):
         self.feats_dir = Path(feats_dir)
         self.save_dir = Path(save_dir)
@@ -384,3 +386,87 @@ class FeatureCompactor:
                 total=len(feats_siglip2_dense_paths),
                 desc="Compacting features"
             ): pass
+
+
+class InfoPackager:
+    def __init__(self, map_dir, save_dir):
+        self.map_dir = Path(map_dir)
+        self.save_dir = Path(save_dir)
+        self.maps = {}
+        self.load_maps()
+
+
+    def load_maps(self):
+        map_paths = self.map_dir.rglob("**/*.csv")
+        for path in tqdm(list(map_paths), desc="Loading maps"):
+            vid_id = path.stem
+            if vid_id not in self.maps: self.maps[vid_id] = {}
+            map = pd.read_csv(path).to_dict(orient="records")
+            for frame_info in map:
+                frame_info["vid_id"] = vid_id
+                frame_id = f"{frame_info["frame_id"]:03d}"
+                frame_info["frame_id"] = frame_id
+                self.maps[vid_id][frame_id] = frame_info
+
+    def form_key_value_dict(self, path: Path, keys_and_column_names: list[tuple[str, str]] = []):
+        info_dict = {}
+        tmp = None
+        match path.suffix:
+            case ".txt":
+                if len(keys_and_column_names) > 1:
+                    print(".txt file cannot be processed with 2 or more keys. If you want to, preprocess the .txt files first.")
+                    pass
+                with open(path, "r", encoding="utf-8") as f:
+                    tmp = f.read()
+                info_dict[keys_and_column_names[0][1]] = tmp
+            case ".json":
+                with open(path, "r", encoding="utf-8") as f:
+                    tmp = json.load(f)
+                for key, column_name in keys_and_column_names:
+                    info_dict[column_name] = tmp[key]
+            case ".csv":
+                tmp = pd.read_csv(path, usecols=[pair[1] for pair in keys_and_column_names]).to_dict(orient="records")
+                pass # Not used for now
+
+        return info_dict
+
+    def add_info_to_map(
+        self,
+        scope: str,
+        info_dir: str | Path,
+        keys_and_column_names: list[tuple[str, str]] = [],
+        max_workers: int = 1
+    ):
+        if not len(keys_and_column_names): return
+        if scope not in ["video", "frame"]:
+            print("Scope must be either \"video\" or \"frame\".")
+            return
+
+        info_dir = Path(info_dir)
+        info_paths = [path for path in list(info_dir.rglob('*')) if path.is_file()]
+        if not len(info_paths): return
+
+        def add_single_file(path: Path):
+            info_dict = self.form_key_value_dict(path, keys_and_column_names)
+            if scope == "frame":
+                vid_id, frame_id = path.parts[-2], path.stem
+                self.maps[vid_id][frame_id].update(info_dict)
+            else:
+                vid_id = path.stem
+                for infos in self.maps[vid_id].values(): infos.update(info_dict)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for _ in tqdm(
+                executor.map(
+                    add_single_file,
+                    info_paths
+                ),
+                total=len(info_paths),
+                desc="Adding data"
+            ): pass
+
+
+    def save_map(self):
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        for vid_id, frame_info in tqdm(self.maps.items(), total=len(self.maps), desc="Saving maps"):
+            pd.DataFrame(frame_info.values()).to_csv(self.save_dir / f"{vid_id}.csv", index=False)
