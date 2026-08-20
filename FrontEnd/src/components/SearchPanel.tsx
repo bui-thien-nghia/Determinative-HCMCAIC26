@@ -141,7 +141,10 @@ export default function SearchPanel() {
     setMode(h.mode)
     setLanguage(h.language)
     setTopK(h.top_k)
-    if (h.collection) setDataset(h.collection)
+    const restoredCollection = h.collection && availableCollections.includes(h.collection)
+      ? h.collection
+      : availableCollections[0]
+    if (restoredCollection) setDataset(restoredCollection)
     if (h.model_id) setModel(h.model_id)
     setSearchResults(h.results)
     addToast('History restored', 'info')
@@ -303,7 +306,7 @@ export default function SearchPanel() {
         </button>
 
 	        {showAdvanced && (
-	          <div className="bg-slate-950 border border-slate-800 rounded-md p-3 flex flex-col gap-3">
+	          <div className="bg-slate-950 border border-slate-800 rounded-md p-3 flex flex-col">
 	            <FilterBlock icon={<Database size={16} />} title="Schema Filters">
 	              <div className="text-[10px] text-amber-400/90 leading-relaxed">
 	                Filter fields come from the selected collection schema. The current backend accepts filter-shaped input but does not apply filters to retrieval yet, so values are stored locally only.
@@ -333,6 +336,8 @@ export default function SearchPanel() {
 	                </button>
 	              )}
 	            </FilterBlock>
+
+	            <div className="my-2 border-t border-slate-800" />
 
 	            <FilterBlock icon={<SlidersHorizontal size={16} />} title="Metadata Display">
 	              {displayFields.length === 0 ? (
@@ -423,12 +428,12 @@ export default function SearchPanel() {
 function FilterBlock({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <details open className="group">
-      <summary className="list-none cursor-pointer bg-slate-900 rounded px-2 py-2 flex items-center gap-2 text-xs font-bold text-slate-300">
+      <summary className="list-none cursor-pointer rounded px-1 py-1.5 flex items-center gap-2 text-xs font-bold text-slate-300 hover:bg-slate-900/70">
         <ChevronDown size={14} className="group-open:rotate-0 -rotate-90 transition" />
         <span className="text-red-400">{icon}</span>
         {title}
       </summary>
-      <div className="border-l border-slate-700 ml-3 pl-3 py-2 flex flex-col gap-2">
+      <div className="border-l border-slate-800 ml-3 pl-3 pt-1.5 pb-2 flex flex-col gap-2">
         {children}
       </div>
     </details>

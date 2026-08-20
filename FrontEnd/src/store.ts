@@ -173,7 +173,7 @@ const loadHistory = (): SearchHistoryItem[] => {
 }
 
 export const useStore = create<AppState>((set) => ({
-  currentDataset: null,
+  currentDataset: 'aic2026_v2',
   currentModel: 'siglip2',
   availableCollections: [],
   collectionSchema: {},
@@ -203,7 +203,7 @@ export const useStore = create<AppState>((set) => ({
 
   isLoading: false,
   error: null,
-  displayMode: 'fast',
+  displayMode: 'full',
 
   setDataset: (dataset) => set({
     currentDataset: dataset,

@@ -17,6 +17,8 @@ type DatasetOption = {
   name: string
 }
 
+const ACTIVE_COLLECTION = 'aic2026_v2'
+
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(`HTTP error! status: ${response.status}`)
@@ -112,7 +114,9 @@ export const api = {
     })
 
     const data = await readJson<CollectionsApiResponse>(response)
-    return Array.isArray(data.collections) ? data.collections : []
+    return Array.isArray(data.collections)
+      ? data.collections.filter((collection) => collection === ACTIVE_COLLECTION)
+      : []
   },
 
   describeSchema: async (collection: string): Promise<CollectionSchema> => {

@@ -167,39 +167,6 @@ function App() {
                 </button>
               </div>
             </div>
-
-            {/* Info button */}
-            <div className="relative group/modeinfo">
-              <button
-                aria-label="Display mode information: Fast Mode and Deep Mode explained"
-                className="w-5 h-5 rounded-full border border-slate-600 bg-slate-800 hover:bg-slate-700 hover:border-slate-500 text-slate-400 hover:text-slate-200 text-[10px] font-bold flex items-center justify-center transition-colors shrink-0"
-              >
-                i
-              </button>
-              <div
-                className="pointer-events-none fixed top-16 right-4 rounded-lg bg-slate-950 border border-slate-700 text-slate-300 text-[10px] leading-relaxed shadow-2xl opacity-0 group-hover/modeinfo:opacity-100 transition-opacity duration-150 z-50 overflow-hidden"
-                style={{ maxWidth: 'min(640px, calc(100vw - 2rem)', wordBreak: 'break-word' }}
-              >
-                <div className="grid grid-cols-2 divide-x divide-slate-700">
-                  <div className="p-3 flex flex-col gap-1.5">
-                    <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0"></span>
-                      Fast
-                    </div>
-                    <p className="text-slate-400">Standard retrieval for quick results.</p>
-                    <p className="text-slate-500 italic">Uses POST /api/search/.</p>
-                  </div>
-                  <div className="p-3 flex flex-col gap-1.5">
-                    <div className="text-[11px] font-bold text-white flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-indigo-400 shrink-0"></span>
-                      Deep
-                    </div>
-                    <p className="text-slate-400">Aggregated retrieval and reranking for more refined results.</p>
-                    <p className="text-slate-500 italic">Uses POST /api/aggregatedsearch/.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </header>
