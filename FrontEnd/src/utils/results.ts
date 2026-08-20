@@ -1,18 +1,42 @@
 import type { SearchResult } from '../store'
 
+type TimestampResolvable = {
+  timestamp?: number | null
+  payload?: {
+    time_order?: number | null
+    timestamp?: number | null
+  } | null
+}
+
 export function getResultVideoId(result?: SearchResult | null) {
-  return result?.video_id || result?.videoId || result?.payload?.video_id || ''
+  return result?.video_id || result?.payload?.video_id || ''
 }
 
 export function getResultFrameId(result?: SearchResult | null) {
-  const frameId = result?.frameId ?? result?.payload?.frame_id
+  const frameId = result?.payload?.frame_id
   return frameId == null ? '' : String(frameId)
 }
 
+export function resolveTimestamp(result?: TimestampResolvable | null): number {
+  const payload = result?.payload
+
+  if (typeof payload?.time_order === 'number') {
+    return payload.time_order
+  }
+
+  if (typeof payload?.timestamp === 'number') {
+    return payload.timestamp
+  }
+
+  if (typeof result?.timestamp === 'number') {
+    return result.timestamp
+  }
+
+  return 0
+}
+
 export function getResultTimestamp(result?: SearchResult | null) {
-  const value = result?.timestamp ?? result?.timeOrder ?? result?.payload?.timestamp ?? result?.payload?.time_order
-  const numeric = Number(value)
-  return Number.isFinite(numeric) ? numeric : 0
+  return resolveTimestamp(result)
 }
 
 export function getResultScore(result?: SearchResult | null) {
@@ -24,8 +48,6 @@ export function getResultCaption(result?: SearchResult | null) {
   const candidates = [
     result?.payload?.caption,
     result?.payload?.transcript,
-    result?.transcript,
-    result?.payload?.asr,
   ]
 
   for (const candidate of candidates) {
@@ -37,8 +59,16 @@ export function getResultCaption(result?: SearchResult | null) {
   return ''
 }
 
+export function getResultImagePath(result?: SearchResult | null) {
+  return result?.payload?.img_link || result?.image_path || ''
+}
+
 export function getRawImagePath(result?: SearchResult | null) {
-  return result?.thumbnailUrl || result?.payload?.img_link || result?.image_path || ''
+  return getResultImagePath(result)
+}
+
+export function getResultVideoPath(result?: SearchResult | null) {
+  return result?.payload?.video_path || ''
 }
 
 export function getPortableImagePath(path?: string | null) {

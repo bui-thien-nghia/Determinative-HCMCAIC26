@@ -1,8 +1,8 @@
 import { Plus, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type SearchResult } from '../store'
-import { getImageUrl, resolveVideoUrl } from '../utils/media'
-import { formatSeconds, getRawImagePath, getResultFrameId, getResultTimestamp, parseTimestampInput } from '../utils/results'
+import { getImageUrl, getVideoUrl } from '../utils/media'
+import { formatSeconds, getRawImagePath, getResultFrameId, getResultVideoPath, parseTimestampInput, resolveTimestamp } from '../utils/results'
 
 type VideoModalProps = {
   isOpen: boolean
@@ -26,9 +26,10 @@ export default function VideoModal({
   result,
 }: VideoModalProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const videoRequestRef = useRef(0)
   const { addCandidate, recheckList } = useStore()
-  const selectedTimestamp = result ? getResultTimestamp(result) : Number(timestamp || 0)
-  const [currentTime, setCurrentTime] = useState(selectedTimestamp)
+  const selectedTimestamp = result ? resolveTimestamp(result) : Number(timestamp || 0)
+  const [currentTime, setCurrentTime] = useState<number | null>(null)
   const [duration, setDuration] = useState(0)
   const [timeInput, setTimeInput] = useState(String(Number.isFinite(selectedTimestamp) ? selectedTimestamp : 0))
   const [inputError, setInputError] = useState<string | null>(null)
@@ -37,11 +38,15 @@ export default function VideoModal({
 
   const frameId = getResultFrameId(result)
   const imagePath = getRawImagePath(result)
-  const videoUrl = resolveVideoUrl(videoId)
+  const videoUrl = getVideoUrl(getResultVideoPath(result), videoId)
+  const videoSourceKey = videoUrl || ''
+  const resultSeekKey = `${result?.id ?? videoId}|${videoSourceKey}|${selectedTimestamp}`
   const selectedTimeLabel = formatSeconds(selectedTimestamp)
   const isAdded = !!result && recheckList.some((item) => item.id === result.id)
-  const offset = currentTime - selectedTimestamp
-  const offsetLabel = Math.abs(offset) < 0.005 ? '±0.00s' : `${offset > 0 ? '+' : ''}${offset.toFixed(2)}s`
+  const offset = currentTime == null ? null : currentTime - selectedTimestamp
+  const offsetLabel = offset == null
+    ? '-- from frame'
+    : Math.abs(offset) < 0.005 ? '±0.00s' : `${offset > 0 ? '+' : ''}${offset.toFixed(2)}s`
 
   const clampTime = (seconds: number) => {
     if (!Number.isFinite(seconds)) return 0
@@ -51,19 +56,58 @@ export default function VideoModal({
 
   const seekTo = (seconds: number, updateInput = true) => {
     const nextTime = clampTime(seconds)
-    if (videoRef.current) {
-      try {
-        videoRef.current.currentTime = nextTime
-      } catch {
-        setInputError('Unable to seek yet. Wait for video metadata to load.')
-      }
+    const video = videoRef.current
+    if (!video || video.readyState < HTMLMediaElement.HAVE_METADATA) {
+      setInputError('Unable to seek yet. Wait for video metadata to load.')
+      return
     }
-    setCurrentTime(nextTime)
-    if (updateInput) setTimeInput(nextTime.toFixed(2))
+
+    const requestId = videoRequestRef.current + 1
+    videoRequestRef.current = requestId
+    let timeoutId: number | undefined
+
+    const cleanup = () => {
+      video.removeEventListener('seeked', handleSeeked)
+      video.removeEventListener('error', handleError)
+      if (timeoutId != null) window.clearTimeout(timeoutId)
+    }
+    const handleSeeked = () => {
+      cleanup()
+      if (requestId !== videoRequestRef.current) return
+      const actual = video.currentTime
+      setCurrentTime(actual)
+      if (updateInput && !editingTime) setTimeInput(actual.toFixed(2))
+      setInputError(null)
+    }
+    const handleError = () => {
+      cleanup()
+      if (requestId !== videoRequestRef.current) return
+      setInputError('Unable to seek video.')
+    }
+    const handleTimeout = () => {
+      cleanup()
+      if (requestId !== videoRequestRef.current) return
+      const actual = video.currentTime
+      setCurrentTime(actual)
+      setInputError(`Video seek did not complete; current position is ${formatSeconds(actual)}.`)
+    }
+
+    try {
+      video.addEventListener('seeked', handleSeeked, { once: true })
+      video.addEventListener('error', handleError, { once: true })
+      timeoutId = window.setTimeout(handleTimeout, 4000)
+      video.currentTime = nextTime
+      if (Math.abs(video.currentTime - nextTime) <= 0.001) {
+        handleSeeked()
+      }
+    } catch {
+      cleanup()
+      setInputError('Unable to seek yet. Wait for video metadata to load.')
+    }
   }
 
   const seekBy = (seconds: number) => {
-    seekTo(currentTime + seconds)
+    seekTo((currentTime ?? 0) + seconds)
   }
 
   const togglePlay = () => {
@@ -92,22 +136,6 @@ export default function VideoModal({
     seekTo(parsed)
   }
 
-  const handleLoadedMetadata = () => {
-    const video = videoRef.current
-    if (!video) return
-    const nextDuration = Number.isFinite(video.duration) ? video.duration : 0
-    setDuration(nextDuration)
-    const nextTime = nextDuration > 0 ? Math.min(selectedTimestamp, nextDuration) : selectedTimestamp
-    try {
-      video.currentTime = nextTime
-      video.pause()
-    } catch {
-      // Browser may defer seeking until the media buffer is ready.
-    }
-    setCurrentTime(nextTime)
-    setTimeInput(nextTime.toFixed(2))
-  }
-
   const handleAddToBuilder = () => {
     if (!result) return
     addCandidate(result)
@@ -115,12 +143,106 @@ export default function VideoModal({
 
   useEffect(() => {
     if (!isOpen) return
-    setCurrentTime(selectedTimestamp)
+    videoRequestRef.current += 1
+    setCurrentTime(null)
     setTimeInput(String(Number.isFinite(selectedTimestamp) ? selectedTimestamp : 0))
     setInputError(null)
     setVideoError(false)
     setDuration(0)
-  }, [isOpen, selectedTimestamp, videoId])
+  }, [isOpen, resultSeekKey, selectedTimestamp])
+
+  useEffect(() => {
+    if (!isOpen || !videoUrl) return
+
+    let cancelled = false
+    const requestId = videoRequestRef.current + 1
+    videoRequestRef.current = requestId
+    const video = videoRef.current
+
+    if (!video) return
+
+    const cleanupFns: Array<() => void> = []
+    const isCurrentRequest = () => !cancelled && requestId === videoRequestRef.current
+
+    const waitForVideoEvent = (eventName: string, timeoutMs = 8000) => (
+      new Promise<void>((resolve, reject) => {
+        let timeoutId: number | undefined
+        const cleanup = () => {
+          video.removeEventListener(eventName, handleEvent)
+          video.removeEventListener('error', handleError)
+          if (timeoutId != null) window.clearTimeout(timeoutId)
+        }
+        const handleEvent = () => {
+          cleanup()
+          resolve()
+        }
+        const handleError = () => {
+          cleanup()
+          reject(new Error(`Video ${eventName} failed`))
+        }
+
+        timeoutId = window.setTimeout(() => {
+          cleanup()
+          reject(new Error(`Timed out waiting for ${eventName}`))
+        }, timeoutMs)
+
+        video.addEventListener(eventName, handleEvent, { once: true })
+        video.addEventListener('error', handleError, { once: true })
+        cleanupFns.push(cleanup)
+      })
+    )
+
+    const loadAndSeek = async () => {
+      try {
+        video.pause()
+        video.src = videoUrl
+        const metadataReady = waitForVideoEvent('loadedmetadata')
+        video.load()
+
+        await metadataReady
+        if (!isCurrentRequest()) return
+
+        const nextDuration = Number.isFinite(video.duration) ? video.duration : 0
+        const targetTime = nextDuration > 0
+          ? Math.max(0, Math.min(selectedTimestamp, nextDuration))
+          : Math.max(0, selectedTimestamp)
+        setDuration(nextDuration)
+
+        if (Math.abs(video.currentTime - targetTime) > 0.001) {
+          const seeked = waitForVideoEvent('seeked')
+          video.currentTime = targetTime
+          await seeked
+        }
+        if (!isCurrentRequest()) return
+
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          await waitForVideoEvent('canplay', 3000).catch(() => undefined)
+        }
+        if (!isCurrentRequest()) return
+
+        const actualTime = video.currentTime
+        video.pause()
+        setCurrentTime(actualTime)
+        setTimeInput(actualTime.toFixed(2))
+        setInputError(null)
+
+        if (Math.abs(actualTime - targetTime) > 0.25) {
+          setInputError(`Video seek landed at ${formatSeconds(actualTime)} instead of ${formatSeconds(targetTime)}.`)
+        }
+      } catch (error) {
+        if (!isCurrentRequest()) return
+        setVideoError(true)
+        setInputError(error instanceof Error ? error.message : 'Unable to load video.')
+      }
+    }
+
+    loadAndSeek()
+
+    return () => {
+      cancelled = true
+      cleanupFns.forEach((cleanup) => cleanup())
+    }
+  }, [isOpen, resultSeekKey, selectedTimestamp, videoUrl])
 
   useEffect(() => {
     if (!isOpen) return
@@ -300,12 +422,22 @@ export default function VideoModal({
         <div className="flex min-h-0 flex-1 items-center justify-center bg-black p-1.5">
           {videoUrl && !videoError ? (
             <video
+              key={videoSourceKey}
               ref={videoRef}
               src={videoUrl}
               controls
               preload="metadata"
               className="h-auto max-h-[62vh] w-full rounded bg-black object-contain"
-              onLoadedMetadata={handleLoadedMetadata}
+              onLoadedMetadata={(event) => {
+                const video = event.currentTarget
+                setDuration(Number.isFinite(video.duration) ? video.duration : 0)
+                setCurrentTime(video.currentTime)
+              }}
+              onSeeked={(event) => {
+                const actual = event.currentTarget.currentTime
+                setCurrentTime(actual)
+                if (!editingTime) setTimeInput(actual.toFixed(2))
+              }}
               onTimeUpdate={(event) => {
                 const nextTime = event.currentTarget.currentTime
                 setCurrentTime(nextTime)

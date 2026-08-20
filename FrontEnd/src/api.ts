@@ -1,52 +1,40 @@
-import { mockResults } from './data/mockResults'
-import type { SearchResult } from './store'
+import type { CollectionSchema, SearchResult } from './store'
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
-function normalize(value: unknown) {
-  return String(value ?? '').toLowerCase()
+interface SearchApiResponse {
+  results: SearchResult[]
 }
 
-function localSearch(query: string, topK: number): SearchResult[] {
-  const q = normalize(query)
-  const words = q.split(/\s+/).filter(Boolean)
+interface CollectionsApiResponse {
+  collections: string[]
+}
 
-  const scored = mockResults.map((item) => {
-    const text = normalize([
-      item.payload.video_id,
-      item.payload.frame_id,
-      item.payload.caption,
-      item.payload.ocr,
-      item.payload.asr,
-      item.payload.objects?.join(' '),
-    ].join(' '))
+interface DescribeSchemaApiResponse {
+  schema: CollectionSchema
+}
 
-    let bonus = 0
-    for (const word of words) {
-      if (text.includes(word)) bonus += 0.04
-    }
+type DatasetOption = {
+  id: string
+  name: string
+}
 
-    return {
-      ...item,
-      score: Math.min(0.99, item.score + bonus),
-    }
-  })
-
-  return scored.sort((a, b) => b.score - a.score).slice(0, Math.min(100, Math.max(1, topK || 20)))
+async function readJson<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`)
+  }
+  return response.json() as Promise<T>
 }
 
 export const api = {
   getModels: async () => [
-    { id: 'siglip-so400m', name: 'SigLIP SO400M' },
-    { id: 'clip-vit-b-32', name: 'CLIP ViT-B/32' },
+    { id: 'siglip2', name: 'SigLIP2' },
   ],
 
-  getDatasets: async () => [
-    { id: 'AIC2026_SIGLIP', name: 'AIC2026_SIGLIP' },
-    { id: 'AIC2026', name: 'AIC2026' },
-  ],
+  getDatasets: async (): Promise<DatasetOption[]> => {
+    const collections = await api.getCollections()
+    return collections.map((name) => ({ id: name, name }))
+  },
 
-  search: async (query: string, collection: string, modelId: string, topK: number) => {
+  search: async (query: string, collection: string, modelId: string, topK: number): Promise<SearchResult[]> => {
     try {
       const response = await fetch('/api/search/', {
         method: 'POST',
@@ -60,23 +48,18 @@ export const api = {
           model_id: modelId,
           top_k: topK,
           language: 'AUTO',
-          filters: {},
         }),
-      });
+      })
 
-      if (!response.ok){
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.results;
+      const data = await readJson<SearchApiResponse>(response)
+      return Array.isArray(data.results) ? data.results : []
     } catch (error){
-      console.error("Error: ", error);
-      return [];
+      console.error("Error: ", error)
+      return []
     }
   },
 
-  aggregatedSearch: async(query: string, collection: string, modelId: string, topK: number) => {
+  aggregatedSearch: async(query: string, collection: string, modelId: string, topK: number): Promise<SearchResult[]> => {
     try {
       const response = await fetch('/api/aggregatedsearch/', {
         method: 'POST',
@@ -90,19 +73,14 @@ export const api = {
           model_id: modelId,
           top_k: topK,
           language: 'AUTO',
-          filters: {},
         }),
-      });
+      })
 
-      if (!response.ok){
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.results;
+      const data = await readJson<SearchApiResponse>(response)
+      return Array.isArray(data.results) ? data.results : []
     } catch (error){
-      console.error("Error: ", error);
-      return [];
+      console.error("Error: ", error)
+      return []
     }
   },
 
@@ -117,60 +95,38 @@ export const api = {
           collection: collection,
           frame_path: imgLink,
         }),
-      });
+      })
 
-      if (!response.ok){
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.results;
+      const data = await readJson<SearchApiResponse>(response)
+      return Array.isArray(data.results) ? data.results : []
     } catch (error){
-      console.error("Error: ", error);
-      return [];
+      console.error("Error: ", error)
+      return []
     }
   },
 
-  getCollections: async () => {
-    try {
-      const response = await fetch('/api/collections/', {
-        method: 'GET',
-      });
+  getCollections: async (): Promise<string[]> => {
+    const response = await fetch('/api/collections/', {
+      method: 'GET',
+    })
 
-      if (!response.ok){
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const collections = await response.json();
-      return collections.collections;
-    } catch (error){
-      console.error("Error: ", error);
-      return [];
-    }
+    const data = await readJson<CollectionsApiResponse>(response)
+    return Array.isArray(data.collections) ? data.collections : []
   },
 
-  describeSchema: async (collection: string) => {
-    try {
-      const response = await fetch('/api/describeschema/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          collection: collection,
-        }),
-      });
+  describeSchema: async (collection: string): Promise<CollectionSchema> => {
+    const response = await fetch('/api/describeschema/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        collection: collection,
+      }),
+    })
 
-      if (!response.ok){
-        throw new Error(`HTTP errot! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.schema;
-    } catch (error){
-      console.error("Error: ", error);
-      return [];
-    }
+    const data = await readJson<DescribeSchemaApiResponse>(response)
+    return data.schema ?? {}
   },
 
   getRecheck: async () => [],

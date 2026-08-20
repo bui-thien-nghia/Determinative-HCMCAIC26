@@ -48,6 +48,12 @@ export function resolveVideoUrl(videoId?: string | null) {
   return `${AIC_VIDEO_PREFIX}${encodeURIComponent(videoId)}`
 }
 
+export function getVideoUrl(videoPath?: string | null, fallbackVideoId?: string | null) {
+  const mediaUrl = getMediaUrl(videoPath)
+  if (mediaUrl) return mediaUrl
+  return resolveVideoUrl(fallbackVideoId)
+}
+
 export async function getNeighborKeyframes(videoId: string, frameId: string, limit = 3) {
   if (!SAFE_VIDEO_ID.test(videoId) || !/^[A-Za-z0-9_-]+$/.test(frameId)) {
     return []

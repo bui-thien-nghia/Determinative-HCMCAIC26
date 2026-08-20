@@ -1,19 +1,32 @@
-import { useEffect, useMemo, useState } from 'react'
-import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Type, FileVideo, Copy, Loader2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Database, FileVideo, Copy, Loader2 } from 'lucide-react'
 import { useStore, type SearchResult } from '../store'
 import { getImageUrl, getNeighborKeyframes, type NeighborFrame } from '../utils/media'
-import { captureVideoFrame, getCachedVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
+import { captureVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
 import {
   copyText,
   formatSeconds,
-  getPortableImagePath,
-  getRawImagePath,
-  getResultCaption,
-  getResultFrameId,
-  getResultScore,
-  getResultTimestamp,
-  getResultVideoId,
-} from '../utils/results'
+	  getPortableImagePath,
+	  getRawImagePath,
+	  getResultCaption,
+	  getResultFrameId,
+	  getResultScore,
+	  getResultTimestamp,
+	  getResultVideoPath,
+	  getResultVideoId,
+	} from '../utils/results'
+
+function formatFieldLabel(field: string) {
+  return field
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function formatMetadataValue(value: unknown) {
+  if (typeof value === 'number') return String(value)
+  if (typeof value === 'string') return value
+  return JSON.stringify(value)
+}
 
 export default function PreviewModal() {
   const {
@@ -25,9 +38,11 @@ export default function PreviewModal() {
     addCandidate,
     lastSearch,
     mode,
-    recheckList,
-    updateRecheckItemAnswer,
-  } = useStore()
+	    recheckList,
+	    updateRecheckItemAnswer,
+	    collectionSchema,
+	    metadataVisibility,
+	  } = useStore()
   const [activeTab, setActiveTab] = useState('Overview')
   const [neighbors, setNeighbors] = useState<NeighborFrame[]>([])
   const [neighborsLoading, setNeighborsLoading] = useState(false)
@@ -38,22 +53,45 @@ export default function PreviewModal() {
   const [capturedFrameKey, setCapturedFrameKey] = useState('')
   const [captureState, setCaptureState] = useState<'idle' | 'loading' | 'ready' | 'fallback'>('idle')
   const [captureStateKey, setCaptureStateKey] = useState('')
+  const captureRequestRef = useRef(0)
+  const activeFrameUrlRef = useRef<string | null>(null)
 
   const currentIndex = searchResults.findIndex(r => r.id === previewResult?.id)
   const videoId = getResultVideoId(previewResult)
   const frameId = getResultFrameId(previewResult)
-  const timestamp = getResultTimestamp(previewResult)
-  const caption = getResultCaption(previewResult)
-  const imagePath = getRawImagePath(previewResult)
-  const portableImagePath = getPortableImagePath(imagePath)
+	  const timestamp = getResultTimestamp(previewResult)
+	  const caption = getResultCaption(previewResult)
+	  const imagePath = getRawImagePath(previewResult)
+	  const videoPath = getResultVideoPath(previewResult)
+	  const videoSource = videoPath || videoId
+	  const portableImagePath = getPortableImagePath(imagePath)
   const existingCandidate = previewResult
     ? recheckList.find((item) => item.id === previewResult.id)
     : undefined
 
   const currentNeighborKey = useMemo(() => `${videoId}:${frameId}`, [videoId, frameId])
-  const captureKey = useMemo(() => (
-    videoId && Number.isFinite(timestamp) ? `${videoId}:${timestamp.toFixed(3)}` : ''
-  ), [videoId, timestamp])
+	  const captureKey = useMemo(() => (
+	    previewResult?.id && videoSource && Number.isFinite(timestamp)
+	      ? `${previewResult.id}|${videoSource}|${timestamp}`
+	      : ''
+	  ), [previewResult?.id, videoSource, timestamp])
+
+  const metadataRows = useMemo(() => {
+    const payload = previewResult?.payload
+    if (!payload) return []
+
+    return Object.entries(payload)
+      .filter(([, value]) => value != null && value !== '')
+      .filter(([field]) => {
+        const descriptor = collectionSchema[field]
+        return !(descriptor && !descriptor.is_indexed && metadataVisibility[field] === false)
+      })
+      .map(([field, value]) => ({
+        field,
+        value: formatMetadataValue(value),
+        isIndexed: collectionSchema[field]?.is_indexed ?? false,
+      }))
+  }, [collectionSchema, metadataVisibility, previewResult])
 
   const goPrevious = () => {
     if (currentIndex > 0) setPreviewResult(searchResults[currentIndex - 1])
@@ -101,26 +139,20 @@ export default function PreviewModal() {
     }
   }
 
-  const handleNeighborClick = (neighbor: NeighborFrame) => {
-    if (!previewResult) return
-    const sameFrame = neighbor.payload.frame_id === frameId
-    const nextResult: SearchResult = {
-      ...previewResult,
-      id: neighbor.id,
-      score: sameFrame ? previewResult.score : 0,
-      video_id: neighbor.video_id,
-      videoId: neighbor.video_id,
-      frameId: neighbor.payload.frame_id,
-      timestamp: neighbor.timestamp ?? null,
-      timeOrder: neighbor.payload.time_order ?? null,
-      frameOrder: neighbor.payload.frame_order ?? null,
-      fps: neighbor.payload.fps ?? null,
-      image_path: neighbor.image_path,
-      thumbnailUrl: neighbor.image_path,
-      payload: {
-        ...previewResult.payload,
-        ...neighbor.payload,
-        caption: sameFrame ? caption : neighbor.payload.caption || '',
+	  const handleNeighborClick = (neighbor: NeighborFrame) => {
+	    if (!previewResult) return
+	    const sameFrame = neighbor.payload.frame_id === frameId
+	    const nextResult: SearchResult = {
+	      ...previewResult,
+	      id: neighbor.id,
+	      score: sameFrame ? previewResult.score : 0,
+	      video_id: neighbor.video_id,
+	      timestamp: neighbor.timestamp ?? null,
+	      image_path: neighbor.image_path,
+	      payload: {
+	        ...previewResult.payload,
+	        ...neighbor.payload,
+	        caption: sameFrame ? caption : neighbor.payload.caption || '',
       },
     }
     setPreviewResult(nextResult)
@@ -182,77 +214,98 @@ export default function PreviewModal() {
 
   useEffect(() => {
     let cancelled = false
+    const requestId = captureRequestRef.current + 1
+    captureRequestRef.current = requestId
+
+    if (activeFrameUrlRef.current) {
+      URL.revokeObjectURL(activeFrameUrlRef.current)
+      activeFrameUrlRef.current = null
+    }
+
     setCapturedFrame(null)
-    setCapturedFrameKey(captureKey)
+    setCapturedFrameKey('')
     setCaptureStateKey(captureKey)
 
-    if (!previewResult || !videoId || !Number.isFinite(timestamp) || !captureKey) {
-      setCaptureState('fallback')
-      return
-    }
+	    if (!previewResult || !videoSource || !Number.isFinite(timestamp) || !captureKey) {
+	      setCaptureState('fallback')
+	      return () => {
+	        cancelled = true
+	      }
+	    }
 
-    const cachedFrame = getCachedVideoFrame(videoId, timestamp)
-    if (cachedFrame) {
-      setCapturedFrame(cachedFrame)
-      setCapturedFrameKey(captureKey)
-      setCaptureState('ready')
-      return
-    }
-
-    setCaptureState('loading')
-    captureVideoFrame(videoId, timestamp)
+	    setCaptureState('loading')
+	    captureVideoFrame(videoSource, timestamp, videoId)
       .then((frame) => {
-        if (cancelled) return
+        if (cancelled || requestId !== captureRequestRef.current) {
+          URL.revokeObjectURL(frame.url)
+          return
+        }
+        if (activeFrameUrlRef.current && activeFrameUrlRef.current !== frame.url) {
+          URL.revokeObjectURL(activeFrameUrlRef.current)
+        }
+        activeFrameUrlRef.current = frame.url
         setCapturedFrame(frame)
         setCapturedFrameKey(captureKey)
         setCaptureState('ready')
         if (import.meta.env.DEV) {
           console.debug({
+            resultId: previewResult.id,
             videoId,
             frameId,
+            videoSource,
             timestamp,
             previewSource: 'video-frame',
           })
         }
       })
       .catch(() => {
-        if (cancelled) return
+        if (cancelled || requestId !== captureRequestRef.current) return
         setCapturedFrame(null)
-        setCapturedFrameKey(captureKey)
+        setCapturedFrameKey('')
         setCaptureState('fallback')
       })
 
     return () => {
       cancelled = true
     }
-  }, [previewResult?.id, videoId, frameId, timestamp, captureKey])
+	  }, [previewResult?.id, videoSource, videoId, frameId, timestamp, captureKey])
+
+  useEffect(() => (
+    () => {
+      captureRequestRef.current += 1
+      if (activeFrameUrlRef.current) {
+        URL.revokeObjectURL(activeFrameUrlRef.current)
+        activeFrameUrlRef.current = null
+      }
+    }
+  ), [])
 
   if (!previewResult) return null
 
-  const tabs = [
-    { id: 'Overview', icon: ImageIcon, enabled: true },
-    { id: 'Neighbors', icon: Map, enabled: true },
-    { id: 'Q&A Answer', icon: MessageSquare, enabled: true },
-    { id: 'OCR', icon: Type, enabled: true }
-  ]
+	  const tabs = [
+	    { id: 'Overview', icon: ImageIcon, enabled: true },
+	    { id: 'Metadata', icon: Database, enabled: true },
+	    { id: 'Neighbors', icon: Map, enabled: true },
+	    { id: 'Q&A Answer', icon: MessageSquare, enabled: true },
+	  ]
 
-  const imageUrl = getImageUrl(imagePath)
-  const cachedFrame = captureKey ? getCachedVideoFrame(videoId, timestamp) : null
+	  const imageUrl = getImageUrl(imagePath)
   const activeCapturedFrame = capturedFrameKey === captureKey ? capturedFrame : null
-  const exactFrame = activeCapturedFrame || cachedFrame
+  const exactFrame = activeCapturedFrame
   const isCaptureStateCurrent = captureStateKey === captureKey
   const effectiveCaptureState = exactFrame
     ? 'ready'
     : isCaptureStateCurrent && captureState === 'fallback'
       ? 'fallback'
       : 'loading'
-  const modelName = typeof previewResult.payload.model === 'string' ? previewResult.payload.model : ''
-  const ocrText = typeof previewResult.payload.ocr === 'string' ? previewResult.payload.ocr.trim() : ''
   const previewSourceLabel = effectiveCaptureState === 'ready'
     ? `Video frame @ ${formatSeconds(exactFrame?.timestamp ?? timestamp)}`
     : effectiveCaptureState === 'loading'
       ? 'Loading exact video frame...'
       : 'Stored keyframe fallback'
+  const showImagePath = metadataVisibility.img_link !== false
+  const showFps = metadataVisibility.fps !== false
+  const showYoutubeLink = metadataVisibility.youtube_link !== false
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-8" onClick={handleClose}>
@@ -394,9 +447,10 @@ export default function PreviewModal() {
                   <InfoTile label="Timestamp" value={formatSeconds(timestamp)} mono />
                   <InfoTile label="Preview Source" value={previewSourceLabel} />
                   <InfoTile label="Score" value={getResultScore(previewResult).toFixed(4)} mono />
-                  <InfoTile label="Model" value={modelName || '--'} />
-                  <InfoTile label="Current Query" value={lastSearch?.query || '--'} />
-                </div>
+	                  <InfoTile label="Current Query" value={lastSearch?.query || '--'} />
+	                  {showFps && <InfoTile label="FPS" value={typeof previewResult.payload.fps === 'number' ? String(previewResult.payload.fps) : '--'} mono />}
+	                  <InfoTile label="Frame Order" value={typeof previewResult.payload.frame_order === 'number' ? String(previewResult.payload.frame_order) : '--'} mono />
+	                </div>
 
                 <div>
                   <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Extracted Context</div>
@@ -405,37 +459,69 @@ export default function PreviewModal() {
                   </div>
                 </div>
 
-                <div className="bg-slate-900 p-3 rounded border border-slate-800">
-                  <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Image Path</div>
-                  <div className="flex items-center gap-2">
-                    <div className="text-xs font-mono text-slate-200 truncate flex-1" title={portableImagePath}>
-                      {portableImagePath || '--'}
-                    </div>
-                    <button
-                      onClick={() => handleCopy(portableImagePath, 'image path')}
-                      disabled={!portableImagePath}
-                      className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded disabled:opacity-40"
-                      title="Copy portable image path"
-                    >
-                      <Copy size={14} />
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => handleCopy(imagePath, 'raw path')}
-                    disabled={!imagePath}
-                    className="mt-2 text-[11px] text-slate-500 hover:text-slate-300 disabled:opacity-40"
-                  >
-                    {copiedField === 'raw path' ? 'Copied raw path' : 'Copy raw path'}
-                  </button>
-                </div>
+	                {showImagePath && (
+	                  <div className="bg-slate-900 p-3 rounded border border-slate-800">
+	                    <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Image Path</div>
+	                    <div className="flex items-center gap-2">
+	                      <div className="text-xs font-mono text-slate-200 truncate flex-1" title={portableImagePath}>
+	                        {portableImagePath || '--'}
+	                      </div>
+	                      <button
+	                        onClick={() => handleCopy(portableImagePath, 'image path')}
+	                        disabled={!portableImagePath}
+	                        className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded disabled:opacity-40"
+	                        title="Copy portable image path"
+	                      >
+	                        <Copy size={14} />
+	                      </button>
+	                    </div>
+	                    <button
+	                      onClick={() => handleCopy(imagePath, 'raw path')}
+	                      disabled={!imagePath}
+	                      className="mt-2 text-[11px] text-slate-500 hover:text-slate-300 disabled:opacity-40"
+	                    >
+	                      {copiedField === 'raw path' ? 'Copied raw path' : 'Copy raw path'}
+	                    </button>
+		                  </div>
+	                )}
 
-              </div>
-            )}
+	                {showYoutubeLink && previewResult.payload.youtube_link && (
+	                  <InfoBlock label="YouTube Link" value={String(previewResult.payload.youtube_link)} />
+	                )}
+
+	              </div>
+	            )}
+
+	            {activeTab === 'Metadata' && (
+	              <div className="flex flex-col gap-2">
+	                {metadataRows.length === 0 ? (
+	                  <div className="text-sm text-slate-500">No metadata fields are visible for this result.</div>
+	                ) : (
+	                  metadataRows.map((row) => (
+	                    <div key={row.field} className="rounded border border-slate-800 bg-slate-900 p-3">
+	                      <div className="flex items-center justify-between gap-2">
+	                        <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
+	                          {formatFieldLabel(row.field)}
+	                        </div>
+	                        {row.isIndexed && (
+	                          <span className="text-[8px] text-blue-300 border border-blue-900 bg-blue-950/40 rounded px-1 uppercase tracking-wider">
+	                            indexed
+	                          </span>
+	                        )}
+	                      </div>
+	                      <div className="mt-1 text-xs font-mono text-slate-200 break-words whitespace-pre-wrap">
+	                        {row.value}
+	                      </div>
+	                    </div>
+	                  ))
+	                )}
+	              </div>
+	            )}
 
             {activeTab === 'Neighbors' && (
               <div className="flex flex-col gap-3">
                 <div className="text-xs text-slate-500 leading-relaxed">
-                  Neighboring keyframe files from AIC26/imgs/{videoId}. Timestamps are shown only when available in maps/{videoId}.csv.
+	                  Neighboring keyframes are loaded from the local media service. Timestamps are shown when available.
                 </div>
                 {neighborsLoading && (
                   <div className="text-sm text-slate-500 flex items-center justify-center h-32">Loading neighbors...</div>
@@ -453,7 +539,7 @@ export default function PreviewModal() {
                   {neighbors.map((neighbor) => {
                     const neighborFrameId = String(neighbor.payload.frame_id)
                     const isCurrent = neighborFrameId === frameId
-                    const neighborTime = neighbor.timestamp
+	                    const neighborTime = neighbor.payload.time_order ?? neighbor.payload.timestamp ?? neighbor.timestamp
                     return (
                       <button
                         key={neighbor.id}
@@ -519,16 +605,7 @@ export default function PreviewModal() {
               </div>
             )}
 
-            {activeTab === 'OCR' && (
-              <div className="text-sm text-slate-400 flex flex-col gap-3">
-                <Type size={24} className="text-slate-700" />
-                <div>
-                  <div className="text-xs text-slate-500 uppercase font-bold mb-1">OCR</div>
-                  <p className="whitespace-pre-wrap">{ocrText || 'OCR text is not available from the current retrieval API.'}</p>
-                </div>
-              </div>
-            )}
-          </div>
+	          </div>
         </div>
       </div>
     </div>

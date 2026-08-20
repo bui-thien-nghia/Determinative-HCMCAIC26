@@ -4,38 +4,34 @@ export interface SearchResult {
   id: string
   score: number
   rank?: number
-  videoId?: string
-  frameId?: string
-  frameOrder?: number | null
-  timeOrder?: number | null
-  fps?: number | null
-  thumbnailUrl?: string | null
-  videoUrl?: string | null
-  youtubeUrl?: string | null
-  transcript?: string | null
   image_path?: string
   video_id?: string
   timestamp?: number | null
   payload: {
+    video_path?: string
     video_id: string
     frame_id: string | number
     img_link?: string
     timestamp?: number | null
     caption?: string
-    ocr?: string
-    asr?: string
-    objects?: string[]
-    people_count?: number
-    keyframe_id?: string | number
-    score?: number
     transcript?: string | null
     time_order?: number | null
     frame_order?: number | null
     fps?: number | null
-    yt_link?: string | null
+    youtube_link?: string | null
+    score?: number
     [key: string]: unknown
   }
 }
+
+export interface SchemaField {
+  data_type: string
+  is_indexed: boolean
+}
+
+export type CollectionSchema = Record<string, SchemaField>
+export type FilterValues = Record<string, string>
+export type MetadataVisibility = Record<string, boolean>
 
 export interface RecheckItem {
   id: string
@@ -86,6 +82,12 @@ export interface SearchStatus {
 interface AppState {
   currentDataset: string | null
   currentModel: string | null
+  availableCollections: string[]
+  collectionSchema: CollectionSchema
+  schemaLoading: boolean
+  schemaError: string | null
+  filterValues: FilterValues
+  metadataVisibility: MetadataVisibility
   searchResults: SearchResult[]
   recheckList: RecheckItem[]
   trakeState: TrakeState
@@ -112,8 +114,15 @@ interface AppState {
   error: string | null
   displayMode: 'fast' | 'full'
 
-  setDataset: (dataset: string) => void
+  setDataset: (dataset: string | null) => void
   setModel: (model: string) => void
+  setAvailableCollections: (collections: string[]) => void
+  setCollectionSchema: (schema: CollectionSchema) => void
+  setSchemaLoading: (loading: boolean) => void
+  setSchemaError: (error: string | null) => void
+  setFilterValue: (field: string, value: string) => void
+  clearFilterValues: () => void
+  setMetadataVisibility: (field: string, visible: boolean) => void
   setSearchResults: (results: SearchResult[]) => void
   setRecheckList: (list: RecheckItem[]) => void
   addToSearchHistory: (item: SearchHistoryItem) => void
@@ -164,8 +173,14 @@ const loadHistory = (): SearchHistoryItem[] => {
 }
 
 export const useStore = create<AppState>((set) => ({
-  currentDataset: 'aic2026',
-  currentModel: 'siglip2-bgem3',
+  currentDataset: null,
+  currentModel: 'siglip2',
+  availableCollections: [],
+  collectionSchema: {},
+  schemaLoading: false,
+  schemaError: null,
+  filterValues: {},
+  metadataVisibility: {},
   searchResults: [],
   recheckList: [],
   trakeState: {
@@ -190,8 +205,38 @@ export const useStore = create<AppState>((set) => ({
   error: null,
   displayMode: 'fast',
 
-  setDataset: (dataset) => set({ currentDataset: dataset }),
+  setDataset: (dataset) => set({
+    currentDataset: dataset,
+    collectionSchema: {},
+    schemaError: null,
+    filterValues: {},
+    metadataVisibility: {},
+  }),
   setModel: (model) => set({ currentModel: model }),
+  setAvailableCollections: (collections) => set((state) => ({
+    availableCollections: collections,
+    currentDataset: state.currentDataset && collections.includes(state.currentDataset)
+      ? state.currentDataset
+      : collections[0] ?? null,
+  })),
+  setCollectionSchema: (schema) => set((state) => {
+    const metadataVisibility: MetadataVisibility = {}
+    for (const [field, descriptor] of Object.entries(schema)) {
+      if (!descriptor.is_indexed) {
+        metadataVisibility[field] = state.metadataVisibility[field] ?? true
+      }
+    }
+    return { collectionSchema: schema, metadataVisibility }
+  }),
+  setSchemaLoading: (loading) => set({ schemaLoading: loading }),
+  setSchemaError: (error) => set({ schemaError: error }),
+  setFilterValue: (field, value) => set((state) => ({
+    filterValues: { ...state.filterValues, [field]: value },
+  })),
+  clearFilterValues: () => set({ filterValues: {} }),
+  setMetadataVisibility: (field, visible) => set((state) => ({
+    metadataVisibility: { ...state.metadataVisibility, [field]: visible },
+  })),
   setSearchResults: (results) => set({ searchResults: results }),
   setRecheckList: (list) => set({ recheckList: list }),
   setSearchStatus: (status) => set({ searchStatus: status }),
@@ -353,7 +398,7 @@ export const useStore = create<AppState>((set) => ({
     const mode = state.mode
     const item = {
       id: result.id || `${result.payload?.video_id}_${result.payload?.frame_id}_${Date.now()}`,
-      img_link: result.thumbnailUrl || result.image_path || result.payload?.img_link || '',
+      img_link: result.payload?.img_link || result.image_path || '',
       payload: result.payload,
       answerType: mode as any,
       addedAt: Date.now(),

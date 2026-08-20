@@ -10,6 +10,7 @@ export default function SystemStatus() {
   const buttonRef = useRef<HTMLButtonElement>(null)
   
   const searchStatus = useStore(state => state.searchStatus)
+  const currentDataset = useStore(state => state.currentDataset)
 
   const updatePosition = () => {
     if (buttonRef.current) {
@@ -151,8 +152,10 @@ export default function SystemStatus() {
             <span className="text-slate-500">Qdrant:</span>
             <span className={statusColor(qdrantOnline)}>--</span>
 
-            <span className="text-slate-500">Collection:</span>
-            <span className="text-slate-300 font-mono">--</span>
+	            <span className="text-slate-500">Collection:</span>
+	            <span className="text-slate-300 font-mono truncate" title={currentDataset || undefined}>
+	              {currentDataset || '--'}
+	            </span>
 
             <span className="text-slate-500">Models:</span>
             <span className={statusColor(modelsLoaded)}>--</span>

@@ -222,8 +222,7 @@ function aicMediaPlugin() {
           return
         }
 
-        res.setHeader('Content-Type', contentTypes[path.extname(target).toLowerCase()] || 'application/octet-stream')
-        fs.createReadStream(target).pipe(res)
+        streamFile(req, res, target)
       })
 
       server.middlewares.use((req, res, next) => {

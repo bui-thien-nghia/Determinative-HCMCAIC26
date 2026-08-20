@@ -1,7 +1,7 @@
 import { X, Film, Plus, ChevronRight, AlertTriangle, Check, Trash2 } from 'lucide-react'
 import { useStore } from '../../store'
 import { getImageUrl } from '../../utils/media'
-import { formatSeconds } from '../../utils/results'
+import { formatSeconds, resolveTimestamp } from '../../utils/results'
 
 export default function TRAKEBuilder() {
   const {
@@ -20,9 +20,8 @@ export default function TRAKEBuilder() {
 
   // ── Temporal validation ────────────────────────────────────────
   const getCandidateTime = (candidate: NonNullable<typeof events[number]['selectedCandidate']>) => {
-    const value = candidate.payload.timestamp ?? candidate.payload.time_order
-    const numeric = Number(value)
-    return Number.isFinite(numeric) ? numeric : null
+    const timestamp = resolveTimestamp(candidate)
+    return Number.isFinite(timestamp) ? timestamp : null
   }
 
   const getTemporalWarnings = () => {

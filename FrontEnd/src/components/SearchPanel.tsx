@@ -1,16 +1,38 @@
-import { useRef, useState } from 'react'
-import { Search, Loader2, Image, Type, Mic, FileQuestion, Trash, SlidersHorizontal, Eye, Hash, Settings2, ChevronDown } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { Search, Loader2, Type, Mic, FileQuestion, Trash, SlidersHorizontal, Database, ChevronDown } from 'lucide-react'
 import { useStore } from '../store'
 import { api } from '../api'
+
+function formatFieldLabel(field: string) {
+  return field
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function inputTypeFor(dataType: string) {
+  const normalized = dataType.toLowerCase()
+  return normalized.includes('int') || normalized.includes('float') || normalized.includes('number')
+    ? 'number'
+    : 'text'
+}
 
 export default function SearchPanel() {
   const [query, setQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(true)
   const searchRequestIdRef = useRef(0)
-  const {
-    currentDataset, setDataset,
-    currentModel, setModel,
-    topK, setTopK,
+	  const {
+	    currentDataset, setDataset,
+	    currentModel, setModel,
+	    availableCollections,
+	    collectionSchema,
+	    schemaLoading,
+	    schemaError,
+	    filterValues,
+	    metadataVisibility,
+	    setFilterValue,
+	    clearFilterValues,
+	    setMetadataVisibility,
+	    topK, setTopK,
     language, setLanguage,
     mode, setMode,
     setSearchResults,
@@ -23,18 +45,37 @@ export default function SearchPanel() {
     displayMode,
     error, setError,
     addToast,
-    setSearchStatus
-  } = useStore()
+	    setSearchStatus
+	  } = useStore()
+
+  const indexedFields = useMemo(() => (
+    Object.entries(collectionSchema)
+      .filter(([, descriptor]) => descriptor.is_indexed)
+      .sort(([a], [b]) => a.localeCompare(b))
+  ), [collectionSchema])
+
+  const displayFields = useMemo(() => (
+    Object.entries(collectionSchema)
+      .filter(([, descriptor]) => !descriptor.is_indexed)
+      .sort(([a], [b]) => a.localeCompare(b))
+  ), [collectionSchema])
 
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
 
     const queryToSearch = query.trim()
 
-    if (!queryToSearch) return
+	    if (!queryToSearch) return
 
-    const collection = currentDataset || 'aic2026'
-    const modelId = currentModel || 'siglip2-bgem3'
+	    if (!currentDataset) {
+	      const msg = 'No collection selected'
+	      setError(msg)
+	      addToast(msg, 'error')
+	      return
+	    }
+
+	    const collection = currentDataset
+	    const modelId = currentModel || 'siglip2'
     const safeTopK = Math.min(100, Math.max(1, Number(topK) || 100))
 
     const requestId = searchRequestIdRef.current + 1
@@ -161,11 +202,11 @@ export default function SearchPanel() {
         )}
 
         <div className="flex gap-2">
-          <button
-            onClick={() => handleSearch()}
-            disabled={isLoading || !query.trim()}
-            className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-          >
+	          <button
+	            onClick={() => handleSearch()}
+	            disabled={isLoading || !query.trim() || !currentDataset}
+	            className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+	          >
             {isLoading ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
             {isLoading ? 'SEARCHING...' : 'SEARCH'}
           </button>
@@ -223,21 +264,34 @@ export default function SearchPanel() {
           </div>
         </div>
 
-        <div>
-          <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Collection</label>
-          <select
-            value={currentDataset || 'aic2026'}
-            onChange={(e) => {
-              const ds = e.target.value
-              setDataset(ds)
-              setModel('siglip2-bgem3')
-              addToast(`Collection changed to ${ds}`, 'info')
-            }}
-            className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500"
-          >
-            <option value="aic2026">aic2026</option>
-          </select>
-        </div>
+	        <div>
+	          <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Collection</label>
+	          <select
+	            value={currentDataset || ''}
+	            disabled={availableCollections.length === 0}
+	            onChange={(e) => {
+	              const ds = e.target.value
+	              setDataset(ds)
+	              setModel('siglip2')
+	              addToast(`Collection changed to ${ds}`, 'info')
+	            }}
+	            className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500 disabled:opacity-50"
+	          >
+	            {availableCollections.length === 0 ? (
+	              <option value="">No collections loaded</option>
+	            ) : (
+	              availableCollections.map((collection) => (
+	                <option key={collection} value={collection}>{collection}</option>
+	              ))
+	            )}
+	          </select>
+	          {schemaLoading && (
+	            <div className="text-[9px] text-slate-500 mt-1">Loading collection schema...</div>
+	          )}
+	          {schemaError && (
+	            <div className="text-[9px] text-red-400 mt-1">{schemaError}</div>
+	          )}
+	        </div>
 
 
         <button
@@ -248,32 +302,59 @@ export default function SearchPanel() {
           {showAdvanced ? 'Hide Advanced Filters' : 'Show Advanced Filters'}
         </button>
 
-        {showAdvanced && (
-          <div className="bg-slate-950 border border-slate-800 rounded-md p-3 flex flex-col gap-3">
-            <FilterBlock icon={<Search size={16} />} title="Semantic & Score">
-              <FilterInput label="Min SigLIP Score" type="number" />
-            </FilterBlock>
-            <FilterBlock icon={<Settings2 size={16} />} title="Metadata & Temporal">
-              <div className="grid grid-cols-2 gap-2">
-                <FilterInput label="Video ID" />
-                <FilterInput label="Frame ID/Idx" />
-              </div>
-            </FilterBlock>
-            <FilterBlock icon={<Eye size={16} />} title="Visual Objects (YOLO)">
-              <FilterInput label="Detected Objects" placeholder="e.g. car, dog, helmet" />
-            </FilterBlock>
-            <FilterBlock icon={<Hash size={16} />} title="People Counting">
-              <div className="grid grid-cols-2 gap-2">
-                <FilterInput label="Min People" type="number" />
-                <FilterInput label="Max People" type="number" />
-              </div>
-            </FilterBlock>
-            <FilterBlock icon={<Type size={16} />} title="OCR & ASR Text">
-              <FilterInput label="OCR Contains" />
-              <FilterInput label="ASR Transcript Contains" />
-            </FilterBlock>
-          </div>
-        )}
+	        {showAdvanced && (
+	          <div className="bg-slate-950 border border-slate-800 rounded-md p-3 flex flex-col gap-3">
+	            <FilterBlock icon={<Database size={16} />} title="Schema Filters">
+	              <div className="text-[10px] text-amber-400/90 leading-relaxed">
+	                Filter fields come from the selected collection schema. The current backend accepts filter-shaped input but does not apply filters to retrieval yet, so values are stored locally only.
+	              </div>
+	              {indexedFields.length === 0 ? (
+	                <div className="text-xs text-slate-600 italic">No indexed fields reported for this collection.</div>
+	              ) : (
+	                <div className="grid grid-cols-2 gap-2">
+	                  {indexedFields.map(([field, descriptor]) => (
+	                    <FilterInput
+	                      key={field}
+	                      label={formatFieldLabel(field)}
+	                      type={inputTypeFor(descriptor.data_type)}
+	                      value={filterValues[field] ?? ''}
+	                      onChange={(value) => setFilterValue(field, value)}
+	                    />
+	                  ))}
+	                </div>
+	              )}
+	              {Object.values(filterValues).some((value) => value.trim()) && (
+	                <button
+	                  type="button"
+	                  onClick={clearFilterValues}
+	                  className="self-start text-[10px] text-slate-500 hover:text-slate-300 border border-slate-800 rounded px-2 py-1"
+	                >
+	                  Clear filter values
+	                </button>
+	              )}
+	            </FilterBlock>
+
+	            <FilterBlock icon={<SlidersHorizontal size={16} />} title="Metadata Display">
+	              {displayFields.length === 0 ? (
+	                <div className="text-xs text-slate-600 italic">No display-only metadata fields reported for this collection.</div>
+	              ) : (
+	                <div className="grid grid-cols-2 gap-2">
+	                  {displayFields.map(([field]) => (
+	                    <label key={field} className="flex items-center gap-2 rounded border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-slate-300">
+	                      <input
+	                        type="checkbox"
+	                        checked={metadataVisibility[field] !== false}
+	                        onChange={(event) => setMetadataVisibility(field, event.target.checked)}
+	                        className="accent-blue-600"
+	                      />
+	                      <span className="truncate" title={field}>{formatFieldLabel(field)}</span>
+	                    </label>
+	                  ))}
+	                </div>
+	              )}
+	            </FilterBlock>
+	          </div>
+	        )}
 
         <div className="mt-2 flex flex-col gap-2">
           <div className="flex justify-between items-center">
@@ -354,13 +435,27 @@ function FilterBlock({ icon, title, children }: { icon: React.ReactNode; title: 
   )
 }
 
-function FilterInput({ label, type = 'text', placeholder }: { label: string; type?: string; placeholder?: string }) {
+function FilterInput({
+  label,
+  type = 'text',
+  placeholder,
+  value,
+  onChange,
+}: {
+  label: string
+  type?: string
+  placeholder?: string
+  value: string
+  onChange: (value: string) => void
+}) {
   return (
     <label className="block">
       <span className="text-[10px] text-slate-500 font-semibold">{label}</span>
       <input
         type={type}
         placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
         className="mt-1 w-full bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-xs text-slate-200 outline-none focus:border-blue-500"
       />
     </label>

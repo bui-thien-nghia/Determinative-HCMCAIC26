@@ -6,9 +6,84 @@ import VideoModal from './components/VideoModal'
 import { useStore } from './store'
 import SystemStatus from './components/SystemStatus'
 import { LayoutGrid, X } from 'lucide-react'
+import { useEffect } from 'react'
+import { api } from './api'
+import { getResultVideoId, resolveTimestamp } from './utils/results'
 
 function App() {
-  const { columns, setColumns, previewResult, playingVideo, setPlayingVideo, toasts, removeToast, displayMode, setDisplayMode } = useStore()
+  const {
+    columns,
+    setColumns,
+    previewResult,
+    playingVideo,
+    setPlayingVideo,
+    toasts,
+    removeToast,
+    displayMode,
+    setDisplayMode,
+    currentDataset,
+    setAvailableCollections,
+    setCollectionSchema,
+    setSchemaLoading,
+    setSchemaError,
+    addToast,
+  } = useStore()
+
+  useEffect(() => {
+    let cancelled = false
+
+    api.getCollections()
+      .then((collections) => {
+        if (cancelled) return
+        setAvailableCollections(collections)
+        if (collections.length === 0) {
+          setSchemaError('No Qdrant collections were returned by the backend.')
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : 'Collection lookup failed'
+        setSchemaError(message)
+        addToast(message, 'error')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [addToast, setAvailableCollections, setSchemaError])
+
+  useEffect(() => {
+    let cancelled = false
+
+    if (!currentDataset) {
+      setCollectionSchema({})
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setSchemaLoading(true)
+    setSchemaError(null)
+    api.describeSchema(currentDataset)
+      .then((schema) => {
+        if (cancelled) return
+        setCollectionSchema(schema)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        const message = error instanceof Error ? error.message : 'Schema lookup failed'
+        setCollectionSchema({})
+        setSchemaError(message)
+        addToast(message, 'error')
+      })
+      .finally(() => {
+        if (!cancelled) setSchemaLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [addToast, currentDataset, setCollectionSchema, setSchemaError, setSchemaLoading])
 
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex flex-col overflow-hidden font-sans select-none relative">
@@ -147,8 +222,8 @@ function App() {
       <VideoModal
         isOpen={!!playingVideo}
         onClose={() => setPlayingVideo(null)}
-        videoId={playingVideo?.video_id || playingVideo?.payload?.video_id || ''}
-        timestamp={playingVideo?.timestamp ?? playingVideo?.payload?.timestamp ?? 0}
+        videoId={getResultVideoId(playingVideo)}
+        timestamp={resolveTimestamp(playingVideo)}
         result={playingVideo}
       />
     </div>

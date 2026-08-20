@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef, memo } from 'react'
-import { Maximize2, Search, Plus, CheckCircle, FileVideo, ImageOff, Loader2 } from 'lucide-react'
+import { Maximize2, Plus, CheckCircle, FileVideo, ImageOff, Loader2 } from 'lucide-react'
 import { useStore } from '../store'
 import clsx from 'clsx'
 import { getImageUrl } from '../utils/media'
 import type { SearchResult } from '../store'
-import { getResultCaption, getResultTimestamp, getResultVideoId } from '../utils/results'
-import { captureVideoFrame, getCachedVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
+import { formatSeconds, getResultCaption, getResultFrameId, getResultImagePath, getResultTimestamp, getResultVideoId } from '../utils/results'
 
 function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargin = '400px') {
   const [isIntersecting, setIntersecting] = useState(false)
@@ -26,15 +25,13 @@ function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargi
 }
 
 export const ResultCard = memo(({ result }: { result: SearchResult }) => {
-  const { currentDataset, currentModel, addToRecheckList, recheckList, setPreviewResult, setSearchResults, setPlayingVideo, addToast, displayMode, mode, trakeState } = useStore()
+  const { recheckList, setPreviewResult, setPlayingVideo, addToast, mode, trakeState, metadataVisibility } = useStore()
 
   const cardRef = useRef<HTMLDivElement>(null)
   const isVisible = useIntersectionObserver(cardRef, '320px')
   
   const [imgLoaded, setImgLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
-  const [exactFrame, setExactFrame] = useState<CapturedVideoFrame | null>(null)
-  const [exactFrameKey, setExactFrameKey] = useState('')
 
   // ── Mode-aware selection state ───────────────────────────────
   // KIS/QA: only highlight if the candidate was added IN the current mode
@@ -57,52 +54,18 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
 
   // The generic "isRechecked" (green checkmark on + button) only applies to KIS/QA
   const isRechecked = isInCurrentModeList
-  const imagePath = result.thumbnailUrl || result.image_path || result.payload?.img_link || ''
+  const imagePath = getResultImagePath(result)
   const keyframeImageUrl = getImageUrl(imagePath)
   const videoId = getResultVideoId(result)
+  const frameId = getResultFrameId(result)
   const timestamp = getResultTimestamp(result)
-  const captureKey = videoId && Number.isFinite(timestamp) ? `${videoId}:${timestamp.toFixed(3)}` : ''
-  const exactFrameUrl = exactFrameKey === captureKey ? exactFrame?.url : null
-  const imageUrl = exactFrameUrl || keyframeImageUrl
   const caption = getResultCaption(result)
+  const showFps = metadataVisibility.fps !== false
 
   useEffect(() => {
     setImgLoaded(false)
-    setImgError(!imageUrl)
-  }, [imageUrl])
-
-  useEffect(() => {
-    let cancelled = false
-    setExactFrame(null)
-    setExactFrameKey(captureKey)
-
-    if (!captureKey || !videoId || !Number.isFinite(timestamp)) return
-
-    const cached = getCachedVideoFrame(videoId, timestamp)
-    if (cached) {
-      setExactFrame(cached)
-      setExactFrameKey(captureKey)
-      return
-    }
-
-    if (!isVisible) return
-
-    captureVideoFrame(videoId, timestamp)
-      .then((frame) => {
-        if (cancelled) return
-        setExactFrame(frame)
-        setExactFrameKey(captureKey)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setExactFrame(null)
-        setExactFrameKey(captureKey)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [captureKey, isVisible, videoId, timestamp])
+    setImgError(!keyframeImageUrl)
+  }, [keyframeImageUrl])
 
   const handleCopyId = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -113,20 +76,6 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   const handlePreview = (e: React.MouseEvent) => {
     e.stopPropagation()
     setPreviewResult(result)
-  }
-
-  const handleContinuousSearch = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!currentDataset || !currentModel) return
-    try {
-      const { api } = await import('../api')
-      const res = await api.continuousSearch(imagePath, currentDataset)
-      setSearchResults(res.results || [])
-      addToast('Similar frames loaded', 'success')
-    } catch (err) {
-      console.error(err)
-      addToast('Similar search failed', 'error')
-    }
   }
 
   const handleAddRecheck = async (e: React.MouseEvent) => {
@@ -187,9 +136,9 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                 <span className="text-[10px] uppercase tracking-wider">Image Broken</span>
               </div>
             )}
-            {imageUrl && !imgError && (
+            {keyframeImageUrl && !imgError && (
               <img
-                src={imageUrl}
+                src={keyframeImageUrl}
                 alt={`Frame ${result.payload?.frame_id}`}
                 className={clsx(
                   "absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-105",
@@ -214,13 +163,6 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
                 title="Watch Video"
               >
                 <FileVideo size={14} />
-              </button>
-              <button
-                onClick={handleContinuousSearch}
-                className="bg-slate-900/80 hover:bg-slate-800 text-white p-1.5 rounded shadow-lg backdrop-blur-sm border border-slate-700 transition-colors"
-                title="Find Similar"
-              >
-                <Search size={14} />
               </button>
               <button
                 onClick={handleAddRecheck}
@@ -266,43 +208,33 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
           <div className="p-2 text-[10px] text-slate-400 font-mono flex flex-col gap-1.5 bg-slate-900/50 flex-1">
             <div className="flex justify-between items-center gap-1">
               <span className="truncate text-slate-300 font-medium font-sans flex-1" title={result.payload?.video_id}>
-                {result.payload?.video_id}
+                {videoId || result.payload?.video_id}
               </span>
               <button className="bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700 text-[9px] shrink-0 cursor-copy hover:text-white" onClick={handleCopyId} title="Copy ID">
-                {result.payload?.frame_id}
+                {frameId}
               </button>
             </div>
 
-            {displayMode === 'full' && (
-              <div className="flex flex-wrap gap-1 mt-0.5">
-                <span className="bg-blue-900/40 text-blue-300 border border-blue-800/50 px-1 rounded text-[8px] uppercase tracking-wider">
-                  {currentDataset?.startsWith('AIC2026') ? 'AIC' : 'LSC'}
+            <div className="flex flex-wrap gap-1 mt-0.5">
+              <span className="bg-slate-800 text-slate-300 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider">
+                {formatSeconds(timestamp)}
+              </span>
+              {typeof result.payload?.frame_order === 'number' && (
+                <span className="bg-slate-800 text-slate-400 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider">
+                  F{result.payload.frame_order}
                 </span>
-                <span className="bg-indigo-900/40 text-indigo-300 border border-indigo-800/50 px-1 rounded text-[8px] uppercase tracking-wider">
-                  {currentModel?.includes('siglip') ? 'SIGLIP' : 'CLIP'}
+              )}
+              {showFps && typeof result.payload?.fps === 'number' && (
+                <span className="bg-slate-800 text-slate-400 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider">
+                  {result.payload.fps} FPS
                 </span>
-                {result.payload?.ocr && (
-                  <span className="bg-emerald-900/40 text-emerald-300 border border-emerald-800/50 px-1 rounded text-[8px] uppercase tracking-wider">
-                    OCR
-                  </span>
-                )}
-                {result.payload?.asr && (
-                  <span className="bg-amber-900/40 text-amber-300 border border-amber-800/50 px-1 rounded text-[8px] uppercase tracking-wider">
-                    ASR
-                  </span>
-                )}
-                {result.payload?.people_count != null && (
-                  <span className="bg-purple-900/40 text-purple-300 border border-purple-800/50 px-1 rounded text-[8px] uppercase tracking-wider">
-                    {result.payload.people_count}p
-                  </span>
-                )}
-                {caption && (
-                  <span className="text-slate-500 text-[8px] italic truncate w-full mt-0.5" title={caption}>
-                    {caption.slice(0, 60)}{caption.length > 60 ? '…' : ''}
-                  </span>
-                )}
-              </div>
-            )}
+              )}
+              {caption && (
+                <span className="text-slate-500 text-[8px] italic truncate w-full mt-0.5" title={caption}>
+                  {caption.slice(0, 60)}{caption.length > 60 ? '...' : ''}
+                </span>
+              )}
+            </div>
           </div>
         </>
       ) : (
