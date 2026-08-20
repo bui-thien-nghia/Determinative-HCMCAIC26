@@ -3,7 +3,7 @@ import numpy as np
 import uuid
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 from tqdm import tqdm
 
 class DataLoader:
