@@ -29,7 +29,7 @@ def formatResult(points: any):
             "score": float(getattr(point, "score", 0)),
             "image_path": str(q_payload.get("frame_path", "")),
             "video_id": str(q_payload.get("vid_id", "")),
-            "timestamp": int(q_payload.get("time_order", 0)),
+            "timestamp": float(q_payload.get("time_order", 0)),
             "payload": {
                 "video_path": str(q_payload.get("vid_path", "")),
                 "video_id": str(q_payload.get("vid_id", "")),
@@ -37,7 +37,7 @@ def formatResult(points: any):
                 "img_link": str(q_payload.get("frame_path", "")),
                 "timestamp": float(q_payload.get("time_order", 0)),
                 "caption": str(q_payload.get("transcript", "")),
-                "fps": int(q_payload.get("fps", 0)),
+                "fps": float(q_payload.get("fps", 0)),
                 "time_order": float(q_payload.get("time_order", 0)),
                 "frame_order": int(q_payload.get("frame_order", 0)),
                 "transcript": str(q_payload.get("transcript", "")),
