@@ -35,6 +35,29 @@ export function resolveTimestamp(result?: TimestampResolvable | null): number {
   return 0
 }
 
+function normalizeFiniteNumber(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+export function getCurrentFrameOrder(
+  result: SearchResult | null | undefined,
+  currentTime: number | null | undefined,
+  baseTimestamp = resolveTimestamp(result),
+): number | null {
+  const baseFrameOrder = normalizeFiniteNumber(result?.payload?.frame_order)
+  const fps = normalizeFiniteNumber(result?.payload?.fps)
+  const videoTime = normalizeFiniteNumber(currentTime)
+
+  if (baseFrameOrder == null || !Number.isInteger(baseFrameOrder)) return null
+  if (fps == null || fps <= 0) return null
+  if (videoTime == null || !Number.isFinite(baseTimestamp)) return null
+
+  const deltaFrames = Math.round((videoTime - baseTimestamp) * fps)
+  return Math.max(0, baseFrameOrder + deltaFrames)
+}
+
 export function getResultTimestamp(result?: SearchResult | null) {
   return resolveTimestamp(result)
 }

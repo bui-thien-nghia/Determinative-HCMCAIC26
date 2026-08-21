@@ -90,7 +90,7 @@ export default function SearchPanel() {
     try {
       const rawResults = displayMode === 'full'
         ? await api.aggregatedSearch(queryToSearch, collection, modelId, safeTopK)
-        : await api.search(queryToSearch, collection, modelId, safeTopK)
+        : await api.search(queryToSearch, collection, modelId, safeTopK, filterValues)
       if (searchRequestIdRef.current !== requestId) return
       const results = displayMode === 'full' ? rawResults.slice(0, safeTopK) : rawResults
       const latency = (performance.now() - startTime) / 1000

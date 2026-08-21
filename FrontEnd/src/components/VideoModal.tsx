@@ -1,8 +1,17 @@
-import { Plus, X } from 'lucide-react'
+import { Copy, Plus, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type SearchResult } from '../store'
 import { getImageUrl, getVideoUrl } from '../utils/media'
-import { formatSeconds, getRawImagePath, getResultFrameId, getResultVideoPath, parseTimestampInput, resolveTimestamp } from '../utils/results'
+import {
+  copyText,
+  formatSeconds,
+  getCurrentFrameOrder,
+  getRawImagePath,
+  getResultFrameId,
+  getResultVideoPath,
+  parseTimestampInput,
+  resolveTimestamp,
+} from '../utils/results'
 
 type VideoModalProps = {
   isOpen: boolean
@@ -35,6 +44,7 @@ export default function VideoModal({
   const [inputError, setInputError] = useState<string | null>(null)
   const [videoError, setVideoError] = useState(false)
   const [editingTime, setEditingTime] = useState(false)
+  const [currentFrameCopied, setCurrentFrameCopied] = useState(false)
 
   const frameId = getResultFrameId(result)
   const imagePath = getRawImagePath(result)
@@ -47,6 +57,8 @@ export default function VideoModal({
   const offsetLabel = offset == null
     ? '-- from frame'
     : Math.abs(offset) < 0.005 ? '±0.00s' : `${offset > 0 ? '+' : ''}${offset.toFixed(2)}s`
+  const currentFrameOrder = getCurrentFrameOrder(result, currentTime, selectedTimestamp)
+  const currentFrameOrderLabel = currentFrameOrder == null ? '--' : String(currentFrameOrder)
 
   const clampTime = (seconds: number) => {
     if (!Number.isFinite(seconds)) return 0
@@ -141,6 +153,14 @@ export default function VideoModal({
     addCandidate(result)
   }
 
+  const handleCopyCurrentFrameOrder = async () => {
+    if (currentFrameOrder == null) return
+    const copied = await copyText(String(currentFrameOrder))
+    if (!copied) return
+    setCurrentFrameCopied(true)
+    window.setTimeout(() => setCurrentFrameCopied(false), 1200)
+  }
+
   useEffect(() => {
     if (!isOpen) return
     videoRequestRef.current += 1
@@ -149,7 +169,12 @@ export default function VideoModal({
     setInputError(null)
     setVideoError(false)
     setDuration(0)
+    setCurrentFrameCopied(false)
   }, [isOpen, resultSeekKey, selectedTimestamp])
+
+  useEffect(() => {
+    setCurrentFrameCopied(false)
+  }, [currentFrameOrder])
 
   useEffect(() => {
     if (!isOpen || !videoUrl) return
@@ -414,6 +439,19 @@ export default function VideoModal({
               <span className="font-mono text-slate-500">
                 {offsetLabel} from frame
               </span>
+              <span className="text-slate-600">•</span>
+              <span className="font-mono text-emerald-300">
+                Current Frame Idx: {currentFrameOrderLabel}
+              </span>
+              <button
+                onClick={handleCopyCurrentFrameOrder}
+                disabled={currentFrameOrder == null}
+                className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300 transition hover:border-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                title="Copy current competition Frame Idx"
+              >
+                <Copy size={11} />
+                {currentFrameCopied ? 'Copied' : 'Copy'}
+              </button>
               {inputError && <span className="text-amber-400">{inputError}</span>}
             </div>
           </div>
