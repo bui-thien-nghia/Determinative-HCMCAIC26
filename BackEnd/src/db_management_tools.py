@@ -4,7 +4,7 @@ import uuid
 from scipy.sparse import csr_matrix
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 from tqdm import tqdm
 
 class DataLoader:
@@ -586,7 +586,7 @@ class QueryManager:
             neighbor_time_orders = [float(neighbor.payload["time_order"]) for neighbor in neighbors]
             # delta = max((max(neighbor_time_orders) - min(neighbor_time_orders)) / len(neighbors), eps) # Std dev
             # delta = max(np.median(np.abs(np.array(neighbor_time_orders) - np.median(neighbor_time_orders))) * (1 - temporal_decay_strictness), eps) # Median abs dev * strictness control
-            delta = max(np.median(np.abs(np.array(neighbor_time_orders) - np.median(neighbor_time_orders))) / aggregation_neighbor_limit # Median abs dev / n_neighbors
+            delta = np.median(np.abs(np.array(neighbor_time_orders) - np.median(neighbor_time_orders))) / aggregation_neighbor_limit + eps # Median abs dev / n_neighbors
 
             temporal_decays = []
             neighbor_feats_siglip2_dense = []
