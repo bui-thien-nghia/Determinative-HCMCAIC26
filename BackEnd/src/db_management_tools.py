@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
 import uuid
+from scipy.sparse import csr_matrix
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from .models import *
+from models import *
 from tqdm import tqdm
 
 class DataLoader:
@@ -225,7 +226,7 @@ class QueryManager:
         database_client_url="http://localhost:6333"
     ):
         # Running setup
-        self.database_client = QdrantClient(url=database_client_url)
+        self.database_client = QdrantClient(url=database_client_url, prefer_grpc=True)
         self.image_text_feature_extractor = image_text_feature_extractor
         self.text_text_feature_extractor = text_text_feature_extractor
 
@@ -278,17 +279,29 @@ class QueryManager:
         return feat_query
 
 
-    def cosine_similarity(self, vect_a: list, vect_b: list):
-        np_vect_a = np.array(vect_a)
-        np_vect_b = np.array(vect_b)
-        return float(np.dot(np_vect_a, np_vect_b)) # Variant for all vectors normalized
+    def cosine_similarity(self, A: list[list[float]], B: list[list[float]]):
+        A = np.array(A)
+        B = np.array(B)
+        return np.dot(A, B.T)
 
 
-    def sparse_similarity(self, ids_a: list, weights_a: list, ids_b: list, weights_b: list):
-        vect_a = {id: weight for id, weight in zip(ids_a, weights_a)}
-        vect_b = {id: weight for id, weight in zip(ids_b, weights_b)}
-        common_ids = set(vect_a.keys()).intersection(vect_b.keys())
-        return float(sum(vect_a[id] * vect_b[id] for id in common_ids))
+    def sparse_similarity(self, A_ids: list[list[int]], A_w: list[list[float]], B_ids: list[list[int]], B_w: list[list[float]]):
+        if not A_ids or not B_ids: return np.array((len(B_ids), len(A_ids)))
+        num_feats = max(
+            max((max(ids) if ids else 0 for ids in A_ids), default=0),
+            max((max(ids) if ids else 0 for ids in B_ids), default=0)
+        ) + 1
+
+        def to_csr(token_ids_batch, weights_batch):
+            flat_token_ids = np.concat([np.array(x) for x in token_ids_batch])
+            flat_weights = np.concat([np.array(x) for x in weights_batch])
+            indptr = np.zeros(len(token_ids_batch) + 1, dtype=np.int32)
+            np.cumsum([len(x) for x in token_ids_batch], out=indptr[1:])
+            return csr_matrix((flat_weights, flat_token_ids, indptr), shape=(len(token_ids_batch), num_feats))
+
+        A = to_csr(A_ids, A_w)
+        B = to_csr(B_ids, B_w)
+        return (A * B.T).toarray()
 
 
     def create_prefetch(
@@ -436,7 +449,8 @@ class QueryManager:
         search_limit: int = 100,
         aggregation_neighbor_limit: int = 10,
         aggregation_weight: float = 0.5,
-        temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2]
+        temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2],
+        eps: float = 1e-8
     ):
         # Safeguard
         aggregation_neighbor_limit = np.clip(aggregation_neighbor_limit, 0, search_limit)
@@ -482,7 +496,7 @@ class QueryManager:
             if not neighbors: continue
             point_time_order = float(point.payload["time_order"])
             neighbor_time_orders = [float(neighbor.payload["time_order"]) for neighbor in neighbors]
-            delta = max((max(neighbor_time_orders) - min(neighbor_time_orders)) / len(neighbors), 1e-5)
+            delta = max((max(neighbor_time_orders) - min(neighbor_time_orders)) / len(neighbors), eps)
 
             total_visual_score = 1
             total_temporal_score = 0
@@ -492,14 +506,14 @@ class QueryManager:
 
                 # Temporal relevance score
                 neighbor_time_order = float(neighbor.payload["time_order"])
-                siglip2_dense_score = self.cosine_similarity(feat_query["siglip2_dense"], neighbor.vector["siglip2_dense"])
-                bgem3_dense_score = self.cosine_similarity(feat_query["bgem3_dense"], neighbor.vector["bgem3_dense"])
+                siglip2_dense_score = self.cosine_similarity([feat_query["siglip2_dense"]], [neighbor.vector["siglip2_dense"]]).item()
+                bgem3_dense_score = self.cosine_similarity([feat_query["bgem3_dense"]], [neighbor.vector["bgem3_dense"]]).item()
                 bgem3_sparse_score = self.sparse_similarity(
-                    feat_query["bgem3_sparse"].indices,
-                    feat_query["bgem3_sparse"].values,
-                    neighbor.vector["bgem3_sparse"].indices,
-                    neighbor.vector["bgem3_sparse"].values
-                )
+                    [feat_query["bgem3_sparse"].indices],
+                    [feat_query["bgem3_sparse"].values],
+                    [neighbor.vector["bgem3_sparse"].indices],
+                    [neighbor.vector["bgem3_sparse"].values]
+                ).item()
                 query_neighbor_score = (temporal_evaluation_weights[0] * siglip2_dense_score +
                                         temporal_evaluation_weights[1] * bgem3_dense_score +
                                         temporal_evaluation_weights[2] * bgem3_sparse_score)
@@ -507,28 +521,131 @@ class QueryManager:
                 total_temporal_score += query_neighbor_score * temporal_decay
 
             aggregation_score = (np.log(total_visual_score) / len(neighbors)) * total_temporal_score
-            point.score = (1 - aggregation_weight) * point.score + aggregation_weight * aggregation_score
+            point.score = float((1 - aggregation_weight) * point.score + aggregation_weight * aggregation_score)
 
-        # Rerank based on aggregated scores
         return sorted(points, key=lambda x: x.score, reverse=True)
 
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="The main script for uploading and querying with Qdrant database")
+    def aggregated_search_v2(
+        self,
+        collection_name: str,
+        query: str,
+        search_limit: int = 100,
+        aggregation_neighbor_limit: int = 10,
+        aggregation_weight: float = 0.5,
+        temporal_decay_strictness: float = 0,
+        temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2],
+        eps: float = 1e-8
+    ):
+        # Safeguard
+        aggregation_neighbor_limit = np.clip(aggregation_neighbor_limit, 0, search_limit)
+        aggregation_weight = np.clip(aggregation_weight, 0, 1)
 
-    # parser.add_argument("-t", "--task", type=str, required=True, choices=["upload", "query"], help="The task to execute with this script")
-    parser.add_argument("--dataset_dir", type=str, required=True, help="Path to the dataset directory")
-    parser.add_argument("--collection_name", type=str, required=True, help="The name of your collection")
-    parser.add_argument("--external_vid_dir", type=str, default="vids", help="The video directory, if you don't store the videos the dataset directory")
-    parser.add_argument("--batch_size", type=int, default=1, help="Number of workers to upload your dataset to Qdrant database")
-    parser.add_argument("--num_workers", type=int, default=256, help="Number of workers to upload your dataset to Qdrant database")
+        # Initial list
+        feat_query = self.encode_query(query)
+        query_prefetch = self.create_prefetch(
+            siglip2_dense=feat_query["siglip2_dense"],
+            bgem3_dense=feat_query["bgem3_dense"],
+            bgem3_sparse=feat_query["bgem3_sparse"],
+            search_limit=search_limit
+        )
+        points = self.search(
+            collection_name,
+            query=query_prefetch,
+            search_limit=search_limit,
+            return_vectors=["siglip2_dense", "bgem3_dense", "bgem3_sparse"],
+            return_payloads=True
+        )
 
-    args = parser.parse_args()
+        # Batch ANN search
+        batch_requests = []
+        for point in points:
+            vid_id = point.payload["vid_id"]
+            prefetch = self.create_prefetch(
+                siglip2_dense=point.vector["siglip2_dense"],
+                search_limit=aggregation_neighbor_limit+1
+            )
+            batch_requests.append(models.QueryRequest(
+                prefetch=prefetch,
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                filter=models.Filter(must=self.create_filters(vid_id=vid_id)),
+                params=self.search_params,
+                limit=aggregation_neighbor_limit+1,
+                with_vector=["siglip2_dense", "bgem3_dense", "bgem3_sparse"],
+                with_payload=["time_order"],
+            ))
+        points_neighbors = self.batch_search(collection_name, queries=batch_requests)
+        points_neighbors = [neighbors[1:] for neighbors in points_neighbors]
 
-    data_loader = DataLoader(dataset_dir=args.dataset_dir, vid_dir=args.external_vid_dir)
-    data_loader.create_and_fill_database(
-        collection_name=args.collection_name,
-        upload_batch_size=args.batch_size,
-        upload_num_workers=args.num_workers
-    )
+        agg_scores = []
+        for point, neighbors in zip(points, points_neighbors):
+            if not neighbors:
+                agg_scores.append(0.0)
+                continue
+            point_time_order = float(point.payload["time_order"])
+            neighbor_time_orders = [float(neighbor.payload["time_order"]) for neighbor in neighbors]
+            # delta = max((max(neighbor_time_orders) - min(neighbor_time_orders)) / len(neighbors), eps) # Std dev
+            # delta = max(np.median(np.abs(np.array(neighbor_time_orders) - np.median(neighbor_time_orders))) * (1 - temporal_decay_strictness), eps) # Median abs dev * strictness control
+            delta = max(np.median(np.abs(np.array(neighbor_time_orders) - np.median(neighbor_time_orders))) / aggregation_neighbor_limit # Median abs dev / n_neighbors
+
+            temporal_decays = []
+            neighbor_feats_siglip2_dense = []
+            neighbor_feats_bgem3_dense = []
+            neighbor_feats_bgem3_sparse_token_ids = []
+            neighbor_feats_bgem3_sparse_weights = []
+            for neighbor in neighbors:
+                neighbor_time_order = float(neighbor.payload["time_order"])
+                temporal_decays.append(np.exp(-((point_time_order - neighbor_time_order) ** 2) / (2 * delta ** 2))) # Radial basis func
+                neighbor_feats_siglip2_dense.append(neighbor.vector["siglip2_dense"])
+                neighbor_feats_bgem3_dense.append(neighbor.vector["bgem3_dense"])
+                neighbor_feats_bgem3_sparse_token_ids.append(neighbor.vector["bgem3_sparse"].indices)
+                neighbor_feats_bgem3_sparse_weights.append(neighbor.vector["bgem3_sparse"].values)
+
+            query_sim_siglip2_dense = self.cosine_similarity(neighbor_feats_siglip2_dense, [feat_query["siglip2_dense"]]).flatten()
+            cand_sim_siglip2_dense = self.cosine_similarity(neighbor_feats_siglip2_dense, [point.vector["siglip2_dense"]]).flatten()
+            sim_bgem3_dense = self.cosine_similarity(neighbor_feats_bgem3_dense, [feat_query["bgem3_dense"]]).flatten()
+            sim_bgem3_sparse = self.sparse_similarity(
+                neighbor_feats_bgem3_sparse_token_ids,
+                neighbor_feats_bgem3_sparse_weights,
+                [feat_query["bgem3_sparse"].indices],
+                [feat_query["bgem3_sparse"].values]
+            ).flatten()
+            visual_coherence_score = np.log(1 + np.sum(cand_sim_siglip2_dense)) / len(neighbors)
+            temporal_bonuses = (
+                temporal_evaluation_weights[0] * query_sim_siglip2_dense +
+                temporal_evaluation_weights[1] * sim_bgem3_dense +
+                temporal_evaluation_weights[2] * sim_bgem3_sparse
+            )
+            temporal_coherence_score = np.dot(temporal_bonuses, np.array(temporal_decays).T)
+
+            def _temp_table_check(point, neighbors, bonus, decays):
+                import pandas as pd
+                point_time = float(point.payload["time_order"])
+                
+                records = []
+                for neighbor, b, d in zip(neighbors, bonus, decays):
+                    t_n = float(neighbor.payload["time_order"])
+                    records.append({
+                        "Time (s)": t_n,
+                        "Distance (s)": abs(t_n - point_time),
+                        "Decay": d,
+                        "Before": b,
+                        "After": b * d
+                    })
+                
+                df = pd.DataFrame(records).sort_values(by="Time (s)").reset_index(drop=True)
+                print(f"\n{point.payload['vid_id']}_{point.payload['frame_id']} (t_p = {point_time:.2f}s): Temporal bonus score before and after decay:")
+                print(df.to_string())
+
+            _temp_table_check(point, neighbors, temporal_bonuses, temporal_decays)
+            
+            agg_scores.append(visual_coherence_score * temporal_coherence_score)
+
+        # Rerank based on aggregated scores
+        init_scores = np.array([point.score for point in points])
+        init_scores = (init_scores - init_scores.min()) / max((init_scores.max() - init_scores.min()), eps)
+        agg_scores = np.array(agg_scores)
+        agg_scores = (agg_scores - agg_scores.min()) / max((agg_scores.max() - agg_scores.min()), eps)
+        final_scores = (1 - aggregation_weight) * init_scores + aggregation_weight * agg_scores
+        for point, final_score in zip(points, final_scores): point.score = float(final_score)
+        return sorted(points, key=lambda x: x.score, reverse=True)

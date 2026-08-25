@@ -57,8 +57,7 @@ redis_data/
 
 # Temporary directories stored at project root
 tmp/
-temp/
-cache/
+submission/
 # Existing team data
 /lab/collections/*
 /lab/additional_data/*/*

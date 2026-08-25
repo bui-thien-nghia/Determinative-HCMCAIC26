@@ -14,7 +14,7 @@ class NotebookDisplay:
         self.num_cols = num_cols
 
 
-    def display(self, points: list[models.ScoredPoint], print_paths: bool = True):
+    def display(self, points: list[models.ScoredPoint], print_score: bool = True):
         img_paths = [widgets.Image(value=open(point.payload["frame_path"], "rb").read(),
                                    format="jpg",
                                    width=self.cell_width)
@@ -27,8 +27,7 @@ class NotebookDisplay:
 
             row = widgets.HBox(images)
             display(row)
-            if print_paths: print([f"{Path(point.payload["frame_path"]).parts[-2]}_{Path(point.payload['frame_path']).stem}"
-                                   for point in points[i:i+self.num_cols]])
+            if print_score: print([f"{point.payload["vid_id"]}_{point.payload["frame_id"]}" for point in points[i:i+self.num_cols]])
 
 
 class Benchmarker:
