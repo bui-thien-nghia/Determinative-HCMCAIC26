@@ -6,7 +6,7 @@ from functools import partial
 from scipy.sparse import csr_matrix
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 from tqdm import tqdm
 
 class DataLoader:
@@ -568,9 +568,9 @@ class QueryManager:
 
         temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2],
         eps: float = 1e-8,
-        log=False,
+        logging=False,
     ):
-        def log(point, neighbors, bonus, decays):
+        def _log(point, neighbors, bonus, decays):
             import pandas as pd
             point_time = float(point.payload["time_order"])
             
@@ -691,13 +691,12 @@ class QueryManager:
 
             if entropy_based_bonus:
                 exp_score = np.sum(cand_sim_siglip2_dense - np.max(cand_sim_siglip2_dense))
-                softmax_score = exp_score / np.sum(exp_score)
+                softmax_score = max(exp_score / np.sum(exp_score), eps)
                 visual_coherence_scores.append(1 - (-np.sum(softmax_score * np.log(softmax_score)) / np.log(len(neighbors)))) # Information gain based on Shannon entropy
             else:
                 visual_coherence_scores.append(np.log(1 + np.sum(cand_sim_siglip2_dense))) # Normal similarity log-sum
 
-            
-            if log: log(point, neighbors, temporal_bonuses, temporal_decays)
+            if logging: _log(point, neighbors, temporal_bonuses, temporal_decays)
         if entropy_based_bonus: visual_coherence_scores = np.linalg.norm(visual_coherence_scores)
         
         # Rerank based on aggregated scores
