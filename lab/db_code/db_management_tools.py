@@ -428,6 +428,7 @@ class QueryManager:
             raise ValueError("Cannot search without vector")
 
         requests = []
+        if not prefetches: prefetches = [None] * len(queries)
         for query, prefetch in zip(queries, prefetches):
             if not isinstance(query, models.QueryRequest):
                 if isinstance(query, str): query = self.encode_query(query, return_vectors=using_vectors)
@@ -562,6 +563,9 @@ class QueryManager:
         # Visual bonus method variable
         entropy_based_bonus: bool = False,
 
+        # Aggregation normalization method variable
+        agg_z_score_sigmoid_norm: bool = False,
+
         temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2],
         eps: float = 1e-8,
         log=False,
@@ -583,7 +587,7 @@ class QueryManager:
             
             df = pd.DataFrame(records).sort_values(by="Time (s)").reset_index(drop=True).round(3)
             print('=' * 30)
-            print(f"{point.payload['vid_id']}_{point.payload['frame_id']}: t_p = {point_time:.3f}s || init_score = {point.score:.3f} || agg_score = {agg_score:.3f}")
+            print(f"{point.payload['vid_id']}_{point.payload['frame_id']}: t_p = {point_time:.3f}s || init_score = {point.score:.3f}")
             print("Temporal bonus score before and after decay:")
             print(df.to_string())
 
@@ -625,7 +629,6 @@ class QueryManager:
                     pre_filter
                 ))
         else:
-            print(points[0].vector["siglip2_dense"])
             batch_requests = [models.QueryRequest(
                 query=point.vector["siglip2_dense"],
                 using="siglip2_dense",
@@ -644,13 +647,15 @@ class QueryManager:
         for point, neighbors in zip(points, points_neighbors):
             neighbors = [neighbor for neighbor in neighbors if neighbor.id != point.id]
             if not neighbors:
-                agg_scores.append(0.0)
+                temporal_coherence_scores.append(0.0)
+                visual_coherence_scores.append(0.0)
+                neighbor_counts.append(1)
                 continue
 
             point_time_order = float(point.payload["time_order"])
             neighbor_time_orders = np.array([float(neighbor.payload["time_order"]) for neighbor in neighbors])
             if use_time_distance:
-                delta = max(np.quantile(np.abs(neighbor_time_orders - point_time_order), 0.25), eps), # nth-quantile abs error
+                delta = max(np.quantile(np.abs(neighbor_time_orders - point_time_order), 0.25), eps) # nth-quantile abs error
             else:
                 delta = 1.334 * np.median(np.abs(neighbor_time_orders - np.median(neighbor_time_orders))) * aggregation_neighbor_limit ** (-0.2)
 
@@ -699,7 +704,11 @@ class QueryManager:
         init_scores = np.array([point.score for point in points])
         agg_scores = (1 / np.array(neighbor_counts)) * np.array(temporal_coherence_scores) * np.array(visual_coherence_scores)
         init_scores = (init_scores - init_scores.min()) / max((init_scores.max() - init_scores.min()), eps)
-        agg_scores = (agg_scores - agg_scores.min()) / max((agg_scores.max() - agg_scores.min()), eps)
+        if agg_z_score_sigmoid_norm:
+            agg_scores = (agg_scores / np.mean(agg_scores)) / np.std(agg_scores) # Z-score norm
+            agg_scores = 1 / (1 + np.exp(-agg_scores)) # Sigmoid norm
+        else:
+            agg_scores = (agg_scores - agg_scores.min()) / max((agg_scores.max() - agg_scores.min()), eps) # Conventional min-max norm
         final_scores = (1 - aggregation_weight) * init_scores + aggregation_weight * agg_scores
         for point, final_score in zip(points, final_scores): point.score = float(final_score)
         return sorted(points, key=lambda x: x.score, reverse=True)
