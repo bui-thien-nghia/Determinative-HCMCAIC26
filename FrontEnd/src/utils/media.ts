@@ -3,6 +3,17 @@ const AIC_VIDEO_PREFIX = '/__aic_video__/'
 const AIC_NEIGHBORS_PREFIX = '/__aic_neighbors__/'
 const SAFE_VIDEO_ID = /^[A-Za-z0-9_-]+$/
 const DATASET_DIRS = ['imgs', 'vids', 'maps', 'mets', 'trans', 'feats']
+let mediaUrlVersion = ''
+
+export function setMediaUrlVersion(version?: string | number | null) {
+  mediaUrlVersion = version == null ? '' : String(version)
+}
+
+function withMediaVersion(url: string) {
+  if (!mediaUrlVersion) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}v=${encodeURIComponent(mediaUrlVersion)}`
+}
 
 function getDatasetRelativePath(path: string) {
   const normalized = path.replace(/\\/g, '/')
@@ -44,13 +55,14 @@ export interface NeighborFrame {
 export function getMediaUrl(path?: string | null) {
   if (!path) return ''
   if (/^(https?:|data:|blob:)/i.test(path)) return path
-  if (path.startsWith(AIC_MEDIA_PREFIX) || path.startsWith('/static/') || path.startsWith('/media/')) return path
+  if (path.startsWith(AIC_MEDIA_PREFIX)) return withMediaVersion(path)
+  if (path.startsWith('/static/') || path.startsWith('/media/')) return path
 
   const relativePath = getDatasetRelativePath(path)
   if (!relativePath) return ''
   const segments = relativePath.split('/').filter(Boolean)
 
-  return `${AIC_MEDIA_PREFIX}${segments.map(encodeURIComponent).join('/')}`
+  return withMediaVersion(`${AIC_MEDIA_PREFIX}${segments.map(encodeURIComponent).join('/')}`)
 }
 
 export function getImageUrl(path?: string | null) {
@@ -59,7 +71,7 @@ export function getImageUrl(path?: string | null) {
 
 export function resolveVideoUrl(videoId?: string | null) {
   if (!videoId || !SAFE_VIDEO_ID.test(videoId)) return null
-  return `${AIC_VIDEO_PREFIX}${encodeURIComponent(videoId)}`
+  return withMediaVersion(`${AIC_VIDEO_PREFIX}${encodeURIComponent(videoId)}`)
 }
 
 export function getVideoUrl(videoPath?: string | null, fallbackVideoId?: string | null) {
@@ -74,8 +86,9 @@ export async function getNeighborKeyframes(videoId: string, frameId: string, lim
   }
 
   const clampedLimit = Math.max(1, Math.min(10, Math.floor(limit)))
+  const versionQuery = mediaUrlVersion ? `&v=${encodeURIComponent(mediaUrlVersion)}` : ''
   const response = await fetch(
-    `${AIC_NEIGHBORS_PREFIX}${encodeURIComponent(videoId)}/${encodeURIComponent(frameId)}?limit=${clampedLimit}`,
+    `${AIC_NEIGHBORS_PREFIX}${encodeURIComponent(videoId)}/${encodeURIComponent(frameId)}?limit=${clampedLimit}${versionQuery}`,
   )
 
   if (!response.ok) {

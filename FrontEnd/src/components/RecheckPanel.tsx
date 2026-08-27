@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Archive, Check, Download, FilePlus2, PackageCheck, Trash } from 'lucide-react'
-import { useStore } from '../store'
+import { getSearchResultFilterSummary, useStore } from '../store'
 
 import KISBuilder from './answer-builder/KISBuilder'
 import QABuilder from './answer-builder/QABuilder'
@@ -38,9 +38,10 @@ export default function RecheckPanel() {
     trakeState,
     clearRecheckList,
     mode,
-    setMode,
-    searchResults,
-    addToast,
+	    setMode,
+	    searchResults,
+	    filterValues,
+	    addToast,
     addCandidate,
     submissionQueryName,
     setSubmissionQueryName,
@@ -58,6 +59,11 @@ export default function RecheckPanel() {
   )
   const rowsUsed = queryType === 'TRAKE' ? validation.rows : recheckList.length
   const selectedEvents = trakeState.events.filter((event) => String(event.frameOrder || '').trim()).length
+  const filterSummary = useMemo(
+    () => getSearchResultFilterSummary(searchResults, filterValues),
+    [filterValues, searchResults],
+  )
+  const visibleResults = filterSummary.results
 
   const handleTypeChange = (nextType: SubmissionQueryType) => {
     setMode(nextType)
@@ -134,8 +140,8 @@ export default function RecheckPanel() {
       return
     }
 
-    const requested = count === 'all' ? searchResults.length : count
-    const candidates = searchResults.slice(0, Math.min(requested, available))
+    const requested = count === 'all' ? visibleResults.length : count
+    const candidates = visibleResults.slice(0, Math.min(requested, available))
     if (candidates.length === 0) {
       addToast('No search results to add', 'error')
       return
@@ -217,7 +223,11 @@ export default function RecheckPanel() {
           <div className="flex flex-col gap-1.5">
             <div className="flex justify-between text-[9px] text-slate-500 uppercase tracking-wider">
               <span>Rows: {rowsUsed} / {MAX_SUBMISSION_ROWS}</span>
-              <span>{searchResults.length} result(s) available</span>
+              <span>
+                {filterSummary.activeFilterCount > 0
+                  ? `${visibleResults.length} / ${searchResults.length} result(s) visible`
+                  : `${searchResults.length} result(s) available`}
+              </span>
             </div>
             <div className="grid grid-cols-4 gap-1">
               {[
@@ -229,7 +239,7 @@ export default function RecheckPanel() {
                 <button
                   key={label}
                   onClick={() => handleBulkAdd(count as number | 'all')}
-                  disabled={searchResults.length === 0 || rowsUsed >= MAX_SUBMISSION_ROWS}
+	                  disabled={visibleResults.length === 0 || rowsUsed >= MAX_SUBMISSION_ROWS}
                   className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-1.5 py-1 rounded text-[9px] font-semibold uppercase border border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {label}

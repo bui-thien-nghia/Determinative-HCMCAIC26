@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
-import { Search, Loader2, Type, Mic, FileQuestion, Trash, SlidersHorizontal, Database, ChevronDown } from 'lucide-react'
-import { useStore } from '../store'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Search, Loader2, Type, Mic, FileQuestion, Trash, SlidersHorizontal, Database, ChevronDown, FolderOpen } from 'lucide-react'
+import { getRangeFilterValidationError, getSearchResultFilterSummary, useStore } from '../store'
 import { api } from '../api'
 
 const DEFAULT_LANGUAGE = 'AUTO'
@@ -18,12 +18,24 @@ function inputTypeFor(dataType: string) {
     : 'text'
 }
 
+function datasetStatusLabel(status: string | null) {
+  if (!status) return 'CHECKING'
+  return status.replace(/_/g, ' ').toUpperCase()
+}
+
+function datasetStatusClass(status: string | null) {
+  if (status === 'ready') return 'bg-emerald-400'
+  if (status === 'images_missing' || status === 'videos_missing' || status === 'partial') return 'bg-amber-400'
+  if (status === 'path_not_found' || status === 'no_permission') return 'bg-red-400'
+  return 'bg-slate-500'
+}
+
 export default function SearchPanel() {
   const [query, setQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(true)
   const searchRequestIdRef = useRef(0)
 	  const {
-	    currentDataset, setDataset,
+		    currentDataset, setDataset,
 	    currentModel, setModel,
 	    availableCollections,
 	    collectionSchema,
@@ -35,19 +47,34 @@ export default function SearchPanel() {
 	    clearFilterValues,
 	    setMetadataVisibility,
 	    topK, setTopK,
-    mode, setMode,
-    setSearchResults,
+	    mode, setMode,
+	    searchResults,
+	    setSearchResults,
     addToSearchHistory,
     removeSearchHistory,
     clearSearchHistory,
     searchHistory,
     setLastSearch,
     isLoading, setIsLoading,
-    displayMode,
-    error, setError,
-    addToast,
-	    setSearchStatus
-	  } = useStore()
+	    displayMode,
+	    error, setError,
+	    addToast,
+		    setSearchStatus,
+		    datasetRoot,
+		    datasetStatus,
+		    datasetStatusMessage,
+		    imagesAvailable,
+		    videosAvailable,
+			    canChangeDatasetRoot,
+			    datasetConfigLoading,
+			    datasetConfigError,
+			    loadDatasetConfig,
+			    chooseDatasetRoot
+			  } = useStore()
+
+  useEffect(() => {
+    loadDatasetConfig()
+  }, [loadDatasetConfig])
 
   const indexedFields = useMemo(() => (
     Object.entries(collectionSchema)
@@ -55,11 +82,50 @@ export default function SearchPanel() {
       .sort(([a], [b]) => a.localeCompare(b))
   ), [collectionSchema])
 
+  const indexedFieldNames = useMemo(() => new Set(indexedFields.map(([field]) => field)), [indexedFields])
+  const transcriptFilterField = indexedFieldNames.has('transcript')
+    ? 'transcript'
+    : indexedFieldNames.has('caption')
+      ? 'caption'
+      : null
+  const videoIdFilterField = indexedFieldNames.has('video_id')
+    ? 'video_id'
+    : indexedFieldNames.has('vid_id')
+      ? 'vid_id'
+      : null
+  const timeOrderFilterField = indexedFieldNames.has('time_order')
+    ? 'time_order'
+    : indexedFieldNames.has('timestamp')
+      ? 'timestamp'
+      : null
+  const primaryFilterFields = useMemo(() => new Set([
+    'frame_id',
+    'frame_order',
+    'time_order',
+    'timestamp',
+    'transcript',
+    'caption',
+    'video_id',
+    'vid_id',
+  ]), [])
+  const remainingIndexedFields = useMemo(
+    () => indexedFields.filter(([field]) => !primaryFilterFields.has(field)),
+    [indexedFields, primaryFilterFields],
+  )
+
   const displayFields = useMemo(() => (
     Object.entries(collectionSchema)
       .filter(([, descriptor]) => !descriptor.is_indexed)
       .sort(([a], [b]) => a.localeCompare(b))
   ), [collectionSchema])
+
+  const filterSummary = useMemo(
+    () => getSearchResultFilterSummary(searchResults, filterValues),
+    [filterValues, searchResults],
+  )
+  const frameIdRangeError = getRangeFilterValidationError(filterValues, 'frame_id')
+  const frameOrderRangeError = getRangeFilterValidationError(filterValues, 'frame_order')
+  const timeOrderRangeError = getRangeFilterValidationError(filterValues, 'time_order')
 
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
@@ -148,6 +214,14 @@ export default function SearchPanel() {
     if (h.model_id) setModel(h.model_id)
     setSearchResults(h.results)
     addToast('History restored', 'info')
+  }
+
+  const handleChooseDatasetRoot = () => {
+    if (!canChangeDatasetRoot) {
+      addToast('Dataset folder is configured on the Vite host', 'info')
+      return
+    }
+    chooseDatasetRoot()
   }
 
   const tabs = [
@@ -249,9 +323,9 @@ export default function SearchPanel() {
           </div>
         </div>
 
-	        <div>
-	          <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Collection</label>
-	          <select
+		        <div>
+		          <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Collection</label>
+		          <select
 	            value={currentDataset || ''}
 	            disabled={availableCollections.length === 0}
 	            onChange={(e) => {
@@ -273,8 +347,53 @@ export default function SearchPanel() {
 	          {schemaLoading && (
 	            <div className="text-[9px] text-slate-500 mt-1">Loading collection schema...</div>
 	          )}
-	          {schemaError && (
-	            <div className="text-[9px] text-red-400 mt-1">{schemaError}</div>
+		          {schemaError && (
+		            <div className="text-[9px] text-red-400 mt-1">{schemaError}</div>
+		          )}
+		        </div>
+
+	        <div>
+	          <label className="text-[10px] font-semibold text-slate-500 mb-1 block uppercase tracking-wider">Dataset Folder</label>
+		          <button
+		            type="button"
+		            onClick={handleChooseDatasetRoot}
+		            disabled={!canChangeDatasetRoot || datasetConfigLoading}
+		            className={`w-full rounded border px-2 py-1.5 text-left transition-colors ${
+		              canChangeDatasetRoot
+		                ? 'bg-slate-950 border-slate-800 hover:border-blue-500 hover:bg-slate-900'
+		                : 'bg-slate-950/70 border-slate-800 text-slate-500 cursor-default'
+		            }`}
+		          >
+	            <div className="flex items-center gap-2 min-w-0">
+	              <FolderOpen size={15} className={canChangeDatasetRoot ? 'text-blue-400 shrink-0' : 'text-slate-500 shrink-0'} />
+	              <span className="truncate text-xs text-slate-200" title={datasetRoot || 'Dataset root not loaded'}>
+	                {datasetConfigLoading && !datasetRoot ? 'Loading dataset folder...' : datasetRoot || 'Dataset root not loaded'}
+	              </span>
+		              {canChangeDatasetRoot ? (
+		                <span className="ml-auto text-[9px] font-bold text-blue-400 uppercase tracking-wider">
+		                  {datasetConfigLoading ? 'Choosing...' : 'Change'}
+		                </span>
+		              ) : (
+	                <span className="ml-auto text-[9px] font-bold text-slate-500 uppercase tracking-wider">Read only</span>
+	              )}
+	            </div>
+	          </button>
+	          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] text-slate-500">
+	            <span className="flex items-center gap-1 font-bold text-slate-300">
+	              <span className={`h-1.5 w-1.5 rounded-full ${datasetStatusClass(datasetStatus)}`} />
+	              {datasetStatusLabel(datasetStatus)}
+	            </span>
+	            <span className={imagesAvailable ? 'text-emerald-400' : 'text-slate-500'}>Images {imagesAvailable ? '✓' : '×'}</span>
+	            <span className={videosAvailable ? 'text-emerald-400' : 'text-slate-500'}>Videos {videosAvailable ? '✓' : '×'}</span>
+	          </div>
+	          {!canChangeDatasetRoot && (
+	            <div className="text-[9px] text-slate-500 mt-1">Dataset configured on host</div>
+	          )}
+	          {datasetConfigError && (
+	            <div className="text-[9px] text-red-400 mt-1">{datasetConfigError}</div>
+	          )}
+	          {!datasetConfigError && datasetStatusMessage && datasetStatus !== 'ready' && (
+	            <div className="text-[9px] text-amber-400 mt-1">{datasetStatusMessage}</div>
 	          )}
 	        </div>
 
@@ -289,35 +408,102 @@ export default function SearchPanel() {
 
 	        {showAdvanced && (
 	          <div className="bg-slate-950 border border-slate-800 rounded-md p-3 flex flex-col">
-	            <FilterBlock icon={<Database size={16} />} title="Schema Filters">
-	              <div className="text-[10px] text-amber-400/90 leading-relaxed">
-	                Filter fields come from the selected collection schema. The current backend accepts filter-shaped input but does not apply filters to retrieval yet, so values are stored locally only.
-	              </div>
-	              {indexedFields.length === 0 ? (
-	                <div className="text-xs text-slate-600 italic">No indexed fields reported for this collection.</div>
-	              ) : (
-	                <div className="grid grid-cols-2 gap-2">
-	                  {indexedFields.map(([field, descriptor]) => (
-	                    <FilterInput
-	                      key={field}
-	                      label={formatFieldLabel(field)}
-	                      type={inputTypeFor(descriptor.data_type)}
-	                      value={filterValues[field] ?? ''}
-	                      onChange={(value) => setFilterValue(field, value)}
-	                    />
-	                  ))}
-	                </div>
-	              )}
-	              {Object.values(filterValues).some((value) => value.trim()) && (
-	                <button
-	                  type="button"
-	                  onClick={clearFilterValues}
-	                  className="self-start text-[10px] text-slate-500 hover:text-slate-300 border border-slate-800 rounded px-2 py-1"
-	                >
-	                  Clear filter values
-	                </button>
-	              )}
-	            </FilterBlock>
+		            <FilterBlock icon={<Database size={16} />} title="Schema Filters">
+		              <div className="flex items-start justify-between gap-3">
+		                <div className="text-[10px] text-amber-400/90 leading-relaxed">
+		                  Filters are applied locally to the current retrieved results. They do not change backend retrieval or ranking.
+		                </div>
+		                {filterSummary.activeFilterCount > 0 && (
+		                  <button
+		                    type="button"
+		                    onClick={clearFilterValues}
+		                    className="shrink-0 text-[9px] text-slate-500 hover:text-slate-300 border border-slate-800 rounded px-2 py-1 uppercase tracking-wider"
+		                  >
+		                    Clear
+		                  </button>
+		                )}
+		              </div>
+		              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+		                {filterSummary.activeFilterCount > 0
+		                  ? `${filterSummary.results.length} / ${searchResults.length} results`
+		                  : `${searchResults.length} results`}
+		              </div>
+		              {filterSummary.invalidFilters.length > 0 && (
+		                <div className="rounded border border-red-900/50 bg-red-950/30 p-2 text-[10px] text-red-300">
+		                  {filterSummary.invalidFilters.join(' ')}
+		                </div>
+		              )}
+              {indexedFields.length === 0 ? (
+                <div className="text-xs text-slate-600 italic">No indexed fields reported for this collection.</div>
+              ) : (
+		                <div className="flex flex-col gap-2">
+		                  {indexedFieldNames.has('frame_id') && (
+		                    <RangeFilterInput
+		                      label="Frame Id"
+		                      fromValue={filterValues.frame_id_from ?? ''}
+		                      toValue={filterValues.frame_id_to ?? ''}
+		                      onFromChange={(value) => setFilterValue('frame_id_from', value)}
+		                      onToChange={(value) => setFilterValue('frame_id_to', value)}
+		                      error={frameIdRangeError}
+		                      inputMode="numeric"
+		                    />
+		                  )}
+		                  {indexedFieldNames.has('frame_order') && (
+		                    <RangeFilterInput
+		                      label="Frame Order"
+		                      fromValue={filterValues.frame_order_from ?? ''}
+		                      toValue={filterValues.frame_order_to ?? ''}
+		                      onFromChange={(value) => setFilterValue('frame_order_from', value)}
+		                      onToChange={(value) => setFilterValue('frame_order_to', value)}
+		                      error={frameOrderRangeError}
+		                      inputMode="numeric"
+		                    />
+		                  )}
+		                  {timeOrderFilterField && (
+		                    <RangeFilterInput
+		                      label="Time Order"
+		                      fromValue={filterValues[`${timeOrderFilterField}_from`] ?? ''}
+		                      toValue={filterValues[`${timeOrderFilterField}_to`] ?? ''}
+		                      onFromChange={(value) => setFilterValue(`${timeOrderFilterField}_from`, value)}
+		                      onToChange={(value) => setFilterValue(`${timeOrderFilterField}_to`, value)}
+		                      error={timeOrderRangeError}
+		                      inputMode="decimal"
+		                    />
+		                  )}
+		                  {(transcriptFilterField || videoIdFilterField) && (
+		                    <div className="grid grid-cols-2 gap-2">
+		                      {transcriptFilterField && (
+		                        <FilterInput
+		                          label="Transcript"
+		                          value={filterValues[transcriptFilterField] ?? ''}
+		                          onChange={(value) => setFilterValue(transcriptFilterField, value)}
+		                        />
+		                      )}
+		                      {videoIdFilterField && (
+		                        <FilterInput
+		                          label="Video Id"
+		                          value={filterValues[videoIdFilterField] ?? ''}
+		                          onChange={(value) => setFilterValue(videoIdFilterField, value)}
+		                        />
+		                      )}
+		                    </div>
+		                  )}
+		                  {remainingIndexedFields.length > 0 && (
+		                    <div className="grid grid-cols-2 gap-2">
+		                      {remainingIndexedFields.map(([field, descriptor]) => (
+		                        <FilterInput
+		                          key={field}
+		                          label={formatFieldLabel(field)}
+		                          type={inputTypeFor(descriptor.data_type)}
+		                          value={filterValues[field] ?? ''}
+		                          onChange={(value) => setFilterValue(field, value)}
+		                        />
+		                      ))}
+		                    </div>
+		                  )}
+		                </div>
+		              )}
+		            </FilterBlock>
 
 	            <div className="my-2 border-t border-slate-800" />
 
@@ -403,9 +589,9 @@ export default function SearchPanel() {
           </div>
         </div>
       </div>
-    </div>
-  )
-}
+		    </div>
+		  )
+		}
 
 function FilterBlock({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
@@ -445,6 +631,55 @@ function FilterInput({
         onChange={(event) => onChange(event.target.value)}
         className="mt-1 w-full bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-xs text-slate-200 outline-none focus:border-blue-500"
       />
+    </label>
+  )
+}
+
+function RangeFilterInput({
+  label,
+  fromValue,
+  toValue,
+  onFromChange,
+  onToChange,
+  error,
+  inputMode,
+}: {
+  label: string
+  fromValue: string
+  toValue: string
+  onFromChange: (value: string) => void
+  onToChange: (value: string) => void
+  error: string | null
+  inputMode: React.HTMLAttributes<HTMLInputElement>['inputMode']
+}) {
+  const inputClass = `w-full bg-slate-900 border rounded px-2 py-1.5 text-xs text-slate-200 outline-none ${
+    error ? 'border-red-800 focus:border-red-500' : 'border-slate-800 focus:border-blue-500'
+  }`
+
+  return (
+    <label className="block">
+      <span className="text-[10px] text-slate-500 font-semibold">{label}</span>
+      <div className="mt-1 grid grid-cols-2 gap-1.5">
+        <input
+          type="text"
+          inputMode={inputMode}
+          placeholder="From"
+          value={fromValue}
+          onChange={(event) => onFromChange(event.target.value)}
+          className={inputClass}
+        />
+        <input
+          type="text"
+          inputMode={inputMode}
+          placeholder="To"
+          value={toValue}
+          onChange={(event) => onToChange(event.target.value)}
+          className={inputClass}
+        />
+      </div>
+      {error && (
+        <div className="mt-1 text-[9px] text-red-300">{error}</div>
+      )}
     </label>
   )
 }

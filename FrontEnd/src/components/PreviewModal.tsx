@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Database, FileVideo, Copy, Loader2 } from 'lucide-react'
-import { useStore, type SearchResult } from '../store'
+import { getFilteredSearchResults, useStore, type SearchResult } from '../store'
 import { getImageUrl, getNeighborKeyframes, type NeighborFrame } from '../utils/media'
 import { captureVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
 import {
@@ -28,12 +28,17 @@ function formatMetadataValue(value: unknown) {
   return JSON.stringify(value)
 }
 
+function hasCopyValue(value?: string | null): value is string {
+  return typeof value === 'string' && value !== ''
+}
+
 export default function PreviewModal() {
   const {
     previewResult,
     setPreviewResult,
-    searchResults,
-    setPlayingVideo,
+	    searchResults,
+	    filterValues,
+	    setPlayingVideo,
     addToast,
     addCandidate,
     lastSearch,
@@ -55,8 +60,13 @@ export default function PreviewModal() {
   const [captureStateKey, setCaptureStateKey] = useState('')
   const captureRequestRef = useRef(0)
   const activeFrameUrlRef = useRef<string | null>(null)
+  const lastCopyFeedbackRef = useRef<{ label: string; time: number }>({ label: '', time: 0 })
 
-  const currentIndex = searchResults.findIndex(r => r.id === previewResult?.id)
+  const previewResults = useMemo(
+    () => getFilteredSearchResults(searchResults, filterValues),
+    [filterValues, searchResults],
+  )
+  const currentIndex = previewResults.findIndex(r => r.id === previewResult?.id)
   const videoId = getResultVideoId(previewResult)
   const frameId = getResultFrameId(previewResult)
 	  const timestamp = getResultTimestamp(previewResult)
@@ -94,11 +104,11 @@ export default function PreviewModal() {
   }, [collectionSchema, metadataVisibility, previewResult])
 
   const goPrevious = () => {
-    if (currentIndex > 0) setPreviewResult(searchResults[currentIndex - 1])
+    if (currentIndex > 0) setPreviewResult(previewResults[currentIndex - 1])
   }
 
   const goNext = () => {
-    if (currentIndex < searchResults.length - 1) setPreviewResult(searchResults[currentIndex + 1])
+    if (currentIndex >= 0 && currentIndex < previewResults.length - 1) setPreviewResult(previewResults[currentIndex + 1])
   }
 
   const handlePrevious = (e: React.MouseEvent) => {
@@ -123,7 +133,11 @@ export default function PreviewModal() {
     const copied = await copyText(value)
     if (copied) {
       setCopiedField(label)
-      addToast(`Copied ${label}`, 'success')
+      const now = Date.now()
+      if (lastCopyFeedbackRef.current.label !== label || now - lastCopyFeedbackRef.current.time > 900) {
+        addToast(`Copied ${label}`, 'success')
+        lastCopyFeedbackRef.current = { label, time: now }
+      }
       window.setTimeout(() => setCopiedField(null), 1200)
     }
   }
@@ -172,14 +186,14 @@ export default function PreviewModal() {
         e.preventDefault()
         goPrevious()
       }
-      if ((e.key === 'ArrowDown' || e.key === 'ArrowRight') && currentIndex < searchResults.length - 1) {
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowRight') && currentIndex >= 0 && currentIndex < previewResults.length - 1) {
         e.preventDefault()
         goNext()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [currentIndex, searchResults, setPreviewResult])
+  }, [currentIndex, previewResults, setPreviewResult])
 
   useEffect(() => {
     if (!previewResult) return
@@ -298,14 +312,20 @@ export default function PreviewModal() {
     : isCaptureStateCurrent && captureState === 'fallback'
       ? 'fallback'
       : 'loading'
-  const previewSourceLabel = effectiveCaptureState === 'ready'
-    ? `Video frame @ ${formatSeconds(exactFrame?.timestamp ?? timestamp)}`
-    : effectiveCaptureState === 'loading'
-      ? 'Loading exact video frame...'
-      : 'Stored keyframe fallback'
-  const showImagePath = metadataVisibility.img_link !== false
-  const showFps = metadataVisibility.fps !== false
-  const showYoutubeLink = metadataVisibility.youtube_link !== false
+	  const previewSourceLabel = effectiveCaptureState === 'ready'
+	    ? `Video frame @ ${formatSeconds(exactFrame?.timestamp ?? timestamp)}`
+	    : effectiveCaptureState === 'loading'
+	      ? 'Loading exact video frame...'
+	      : 'Stored keyframe fallback'
+  const timestampCopyValue = Number.isFinite(timestamp) ? timestamp.toFixed(2) : ''
+  const scoreValue = getResultScore(previewResult).toFixed(4)
+  const fpsValue = typeof previewResult.payload.fps === 'number' ? String(previewResult.payload.fps) : ''
+  const frameOrderValue = typeof previewResult.payload.frame_order === 'number' ? String(previewResult.payload.frame_order) : ''
+  const currentQuery = lastSearch?.query || ''
+  const youtubeLink = typeof previewResult.payload.youtube_link === 'string' ? previewResult.payload.youtube_link : ''
+	  const showImagePath = metadataVisibility.img_link !== false
+	  const showFps = metadataVisibility.fps !== false
+	  const showYoutubeLink = metadataVisibility.youtube_link !== false
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-8" onClick={handleClose}>
@@ -319,7 +339,7 @@ export default function PreviewModal() {
 
       <button
         onClick={handleNext}
-        disabled={currentIndex >= searchResults.length - 1}
+	        disabled={currentIndex < 0 || currentIndex >= previewResults.length - 1}
         className="absolute right-4 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-white disabled:opacity-20 disabled:hover:text-slate-400 transition-colors bg-slate-900/50 hover:bg-slate-800 rounded-full border border-slate-700 backdrop-blur-md"
       >
         <ChevronRight size={32} />
@@ -339,11 +359,11 @@ export default function PreviewModal() {
               ← PREV
             </button>
             <span className="px-3 py-1.5 border-x border-white/10">
-              Result {currentIndex + 1} of {searchResults.length}
+	              Result {currentIndex >= 0 ? currentIndex + 1 : '-'} of {previewResults.length}
             </span>
             <button
               onClick={handleNext}
-              disabled={currentIndex >= searchResults.length - 1}
+	              disabled={currentIndex < 0 || currentIndex >= previewResults.length - 1}
               className="px-2.5 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-300"
             >
               NEXT →
@@ -381,14 +401,43 @@ export default function PreviewModal() {
 
         <div className="w-[450px] bg-slate-950 flex flex-col shrink-0 border-l border-slate-800">
           <div className="flex items-center justify-between gap-3 p-4 border-b border-slate-800 bg-slate-900">
-            <div className="min-w-0">
-              <div className="text-sm font-bold text-slate-200 truncate pr-4" title={videoId}>
-                {videoId || 'Unknown video'}
-              </div>
-              <div className="text-xs text-slate-400 font-mono mt-0.5">
-                Frame: {frameId || 'N/A'} - {formatSeconds(timestamp)}
-              </div>
-            </div>
+	            <div className="min-w-0">
+	              <div className="flex items-center gap-1.5 pr-4">
+	                <div className="min-w-0 truncate text-sm font-bold text-slate-200 select-text" title={videoId}>
+	                  {videoId || 'Unknown video'}
+	                </div>
+	                {hasCopyValue(videoId) && (
+	                  <CopyButton
+	                    label="Video ID"
+	                    value={videoId}
+	                    copied={copiedField === 'Video ID'}
+	                    onCopy={handleCopy}
+	                  />
+	                )}
+	              </div>
+	              <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-slate-400 font-mono">
+	                <span>Frame:</span>
+	                <span className="select-text">{frameId || 'N/A'}</span>
+	                {hasCopyValue(frameId) && (
+	                  <CopyButton
+	                    label="Frame ID"
+	                    value={frameId}
+	                    copied={copiedField === 'Frame ID'}
+	                    onCopy={handleCopy}
+	                  />
+	                )}
+	                <span>-</span>
+	                <span className="select-text">{formatSeconds(timestamp)}</span>
+	                {hasCopyValue(timestampCopyValue) && (
+	                  <CopyButton
+	                    label="Timestamp"
+	                    value={timestampCopyValue}
+	                    copied={copiedField === 'Timestamp'}
+	                    onCopy={handleCopy}
+	                  />
+	                )}
+	              </div>
+	            </div>
             <div className="flex items-center gap-1.5 shrink-0">
               <button
                 onClick={handleAddToBuilder}
@@ -442,52 +491,67 @@ export default function PreviewModal() {
             {activeTab === 'Overview' && (
               <div className="flex flex-col gap-5">
                 <div className="grid grid-cols-2 gap-3">
-                  <InfoTile label="Video" value={videoId || 'N/A'} />
-                  <InfoTile label="Frame ID" value={frameId || 'N/A'} mono />
-                  <InfoTile label="Timestamp" value={formatSeconds(timestamp)} mono />
-                  <InfoTile label="Preview Source" value={previewSourceLabel} />
-                  <InfoTile label="Score" value={getResultScore(previewResult).toFixed(4)} mono />
-	                  <InfoTile label="Current Query" value={lastSearch?.query || '--'} />
-	                  {showFps && <InfoTile label="FPS" value={typeof previewResult.payload.fps === 'number' ? String(previewResult.payload.fps) : '--'} mono />}
-	                  <InfoTile label="Frame Order" value={typeof previewResult.payload.frame_order === 'number' ? String(previewResult.payload.frame_order) : '--'} mono />
-	                </div>
+	                  <InfoTile label="Video" value={videoId || 'N/A'} copyLabel="Video ID" copyValue={videoId} copiedField={copiedField} onCopy={handleCopy} />
+	                  <InfoTile label="Frame ID" value={frameId || 'N/A'} copyLabel="Frame ID" copyValue={frameId} copiedField={copiedField} onCopy={handleCopy} mono />
+	                  <InfoTile label="Timestamp" value={formatSeconds(timestamp)} copyLabel="Timestamp" copyValue={timestampCopyValue} copiedField={copiedField} onCopy={handleCopy} mono />
+	                  <InfoTile label="Preview Source" value={previewSourceLabel} copyLabel="Preview Source" copyValue={previewSourceLabel} copiedField={copiedField} onCopy={handleCopy} />
+	                  <InfoTile label="Score" value={scoreValue} copyLabel="Score" copyValue={scoreValue} copiedField={copiedField} onCopy={handleCopy} mono />
+		                  <InfoTile label="Current Query" value={currentQuery || '--'} copyLabel="Query" copyValue={currentQuery} copiedField={copiedField} onCopy={handleCopy} />
+		                  {showFps && <InfoTile label="FPS" value={fpsValue || '--'} copyLabel="FPS" copyValue={fpsValue} copiedField={copiedField} onCopy={handleCopy} mono />}
+		                  <InfoTile label="Frame Order / BTC Frame Idx" value={frameOrderValue || '--'} copyLabel="Frame Order" copyValue={frameOrderValue} copiedField={copiedField} onCopy={handleCopy} mono />
+		                </div>
 
-                <div>
-                  <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Extracted Context</div>
-                  <div className="bg-slate-900 p-4 rounded border border-slate-800 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
-                    {caption || 'No transcript available for this frame.'}
-                  </div>
-                </div>
+	                <div>
+	                  <div className="mb-2 flex items-center justify-between gap-2">
+	                    <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Extracted Context</div>
+	                    {hasCopyValue(caption) && (
+	                      <CopyButton
+	                        label="Context"
+	                        value={caption}
+	                        copied={copiedField === 'Context'}
+	                        onCopy={handleCopy}
+	                      />
+	                    )}
+	                  </div>
+	                  <div className="bg-slate-900 p-4 rounded border border-slate-800 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap select-text">
+	                    {caption || 'No transcript available for this frame.'}
+	                  </div>
+	                </div>
 
 	                {showImagePath && (
 	                  <div className="bg-slate-900 p-3 rounded border border-slate-800">
-	                    <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Image Path</div>
-	                    <div className="flex items-center gap-2">
-	                      <div className="text-xs font-mono text-slate-200 truncate flex-1" title={portableImagePath}>
-	                        {portableImagePath || '--'}
-	                      </div>
-	                      <button
-	                        onClick={() => handleCopy(portableImagePath, 'image path')}
-	                        disabled={!portableImagePath}
-	                        className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded disabled:opacity-40"
-	                        title="Copy portable image path"
-	                      >
-	                        <Copy size={14} />
-	                      </button>
+		                    <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">Image Path</div>
+		                    <div className="flex items-center gap-2">
+		                      <div className="text-xs font-mono text-slate-200 truncate flex-1 select-text" title={portableImagePath}>
+		                        {portableImagePath || '--'}
+		                      </div>
+		                      <button
+		                        onClick={() => handleCopy(portableImagePath, 'Image Path')}
+		                        disabled={!portableImagePath}
+		                        className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded disabled:opacity-40"
+		                        title="Copy image path"
+		                        aria-label="Copy Image Path"
+		                      >
+		                        <Copy size={14} />
+		                      </button>
 	                    </div>
 	                    <button
-	                      onClick={() => handleCopy(imagePath, 'raw path')}
+		                      onClick={() => handleCopy(imagePath, 'Raw Path')}
 	                      disabled={!imagePath}
 	                      className="mt-2 text-[11px] text-slate-500 hover:text-slate-300 disabled:opacity-40"
 	                    >
-	                      {copiedField === 'raw path' ? 'Copied raw path' : 'Copy raw path'}
+		                      {copiedField === 'Raw Path' ? 'Copied raw path' : 'Copy raw path'}
 	                    </button>
 		                  </div>
 	                )}
 
-	                {showYoutubeLink && previewResult.payload.youtube_link && (
-	                  <InfoBlock label="YouTube Link" value={String(previewResult.payload.youtube_link)} />
-	                )}
+		                {videoPath && (
+		                  <InfoBlock label="Video Path" value={videoPath} copyLabel="Video Path" copyValue={videoPath} copiedField={copiedField} onCopy={handleCopy} mono />
+		                )}
+
+		                {showYoutubeLink && youtubeLink && (
+		                  <InfoBlock label="YouTube Link" value={youtubeLink} copyLabel="YouTube Link" copyValue={youtubeLink} copiedField={copiedField} onCopy={handleCopy} />
+		                )}
 
 	              </div>
 	            )}
@@ -497,23 +561,31 @@ export default function PreviewModal() {
 	                {metadataRows.length === 0 ? (
 	                  <div className="text-sm text-slate-500">No metadata fields are visible for this result.</div>
 	                ) : (
-	                  metadataRows.map((row) => (
-	                    <div key={row.field} className="rounded border border-slate-800 bg-slate-900 p-3">
-	                      <div className="flex items-center justify-between gap-2">
-	                        <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
+		                  metadataRows.map((row) => (
+		                    <div key={row.field} className="rounded border border-slate-800 bg-slate-900 p-3">
+		                      <div className="flex items-center justify-between gap-2">
+		                        <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
 	                          {formatFieldLabel(row.field)}
 	                        </div>
 	                        {row.isIndexed && (
 	                          <span className="text-[8px] text-blue-300 border border-blue-900 bg-blue-950/40 rounded px-1 uppercase tracking-wider">
-	                            indexed
-	                          </span>
-	                        )}
-	                      </div>
-	                      <div className="mt-1 text-xs font-mono text-slate-200 break-words whitespace-pre-wrap">
-	                        {row.value}
-	                      </div>
-	                    </div>
-	                  ))
+		                            indexed
+		                          </span>
+		                        )}
+		                      </div>
+		                      <div className="mt-1 flex items-start gap-2">
+		                        <div className="min-w-0 flex-1 text-xs font-mono text-slate-200 break-words whitespace-pre-wrap select-text">
+		                          {row.value}
+		                        </div>
+		                        <CopyButton
+		                          label={formatFieldLabel(row.field)}
+		                          value={row.value}
+		                          copied={copiedField === formatFieldLabel(row.field)}
+		                          onCopy={handleCopy}
+		                        />
+		                      </div>
+		                    </div>
+		                  ))
 	                )}
 	              </div>
 	            )}
@@ -574,8 +646,8 @@ export default function PreviewModal() {
               <div className="flex flex-col gap-4">
                 {mode === 'QA' ? (
                   <>
-                    <InfoBlock label="Question" value={lastSearch?.query || '--'} />
-                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} />
+	                    <InfoBlock label="Question" value={currentQuery || '--'} copyLabel="Question" copyValue={currentQuery} copiedField={copiedField} onCopy={handleCopy} />
+	                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} copyLabel="Context" copyValue={caption} copiedField={copiedField} onCopy={handleCopy} />
                     <div>
                       <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Answer</div>
                       <textarea
@@ -599,7 +671,7 @@ export default function PreviewModal() {
                     <div className="rounded border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">
                       QA answer editing is available in QA mode.
                     </div>
-                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} />
+	                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} copyLabel="Context" copyValue={caption} copiedField={copiedField} onCopy={handleCopy} />
                   </>
                 )}
               </div>
@@ -612,21 +684,105 @@ export default function PreviewModal() {
   )
 }
 
-function InfoTile({ label, value, secondary, mono = false }: { label: string; value: string; secondary?: string; mono?: boolean }) {
+function CopyButton({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string
+  value?: string | null
+  copied?: boolean
+  onCopy: (value: string, label: string) => void
+}) {
+  if (!hasCopyValue(value)) return null
+
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation()
+        onCopy(value, label)
+      }}
+      className="shrink-0 rounded p-1 text-slate-500 opacity-70 transition hover:bg-slate-800 hover:text-slate-100 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+      title={`Copy ${label}`}
+      aria-label={`Copy ${label}`}
+    >
+      <Copy size={12} />
+      <span className="sr-only">{copied ? `Copied ${label}` : `Copy ${label}`}</span>
+    </button>
+  )
+}
+
+function InfoTile({
+  label,
+  value,
+  secondary,
+  mono = false,
+  copyLabel,
+  copyValue,
+  copiedField,
+  onCopy,
+}: {
+  label: string
+  value: string
+  secondary?: string
+  mono?: boolean
+  copyLabel?: string
+  copyValue?: string
+  copiedField?: string | null
+  onCopy?: (value: string, label: string) => void
+}) {
   return (
     <div className="bg-slate-900 p-3 rounded border border-slate-800 min-w-0">
       <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{label}</div>
-      <div className={`text-sm text-white truncate ${mono ? 'font-mono' : ''}`} title={value}>{value}</div>
-      {secondary && <div className="text-[11px] text-slate-500 font-mono mt-0.5">{secondary}</div>}
+      <div className="flex items-center gap-1.5 min-w-0">
+        <div className={`min-w-0 flex-1 text-sm text-white truncate select-text ${mono ? 'font-mono' : ''}`} title={value}>{value}</div>
+        {copyLabel && onCopy && (
+          <CopyButton
+            label={copyLabel}
+            value={copyValue}
+            copied={copiedField === copyLabel}
+            onCopy={onCopy}
+          />
+        )}
+      </div>
+      {secondary && <div className="text-[11px] text-slate-500 font-mono mt-0.5 select-text">{secondary}</div>}
     </div>
   )
 }
 
-function InfoBlock({ label, value }: { label: string; value: string }) {
+function InfoBlock({
+  label,
+  value,
+  copyLabel,
+  copyValue,
+  copiedField,
+  onCopy,
+  mono = false,
+}: {
+  label: string
+  value: string
+  copyLabel?: string
+  copyValue?: string
+  copiedField?: string | null
+  onCopy?: (value: string, label: string) => void
+  mono?: boolean
+}) {
   return (
     <div>
-      <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">{label}</div>
-      <div className="bg-slate-900 p-3 rounded border border-slate-800 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{label}</div>
+        {copyLabel && onCopy && (
+          <CopyButton
+            label={copyLabel}
+            value={copyValue}
+            copied={copiedField === copyLabel}
+            onCopy={onCopy}
+          />
+        )}
+      </div>
+      <div className={`bg-slate-900 p-3 rounded border border-slate-800 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap select-text ${mono ? 'font-mono text-xs' : ''}`}>
         {value}
       </div>
     </div>

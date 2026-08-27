@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { api, DatasetConfigRequestError, type DatasetConfigResponse, type DatasetConfigStatus } from './api'
+import { setMediaUrlVersion } from './utils/media'
 import {
   DEFAULT_QUERY_NAME,
   getSubmissionFrame,
@@ -88,6 +90,259 @@ export interface SearchStatus {
   latency: number | null
 }
 
+export interface SearchResultFilterSummary {
+  results: SearchResult[]
+  activeFilterCount: number
+  invalidFilters: string[]
+}
+
+const integerPattern = /^\d+$/
+const rangeFilterBaseFields = new Set(['frame_id', 'frame_order', 'time_order', 'timestamp'])
+const rangeFilterKeys = new Set([
+  'frame_id_from',
+  'frame_id_to',
+  'frame_order_from',
+  'frame_order_to',
+  'time_order_from',
+  'time_order_to',
+  'timestamp_from',
+  'timestamp_to',
+])
+
+function normalizeFilterText(value: string) {
+  return value.trim()
+}
+
+function normalizeComparableText(value: unknown) {
+  return value == null ? '' : String(value).trim()
+}
+
+function normalizeSearchText(value: unknown) {
+  return normalizeComparableText(value).toLocaleLowerCase()
+}
+
+function parseNumberFilter(value: string) {
+  const normalized = normalizeFilterText(value)
+  if (!normalized) return null
+  const numeric = Number(normalized)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function rangeAliases(field: string) {
+  return field === 'time_order' ? ['time_order', 'timestamp'] : [field]
+}
+
+function firstRangeValue(filterValues: FilterValues, aliases: string[], suffix: 'from' | 'to') {
+  for (const alias of aliases) {
+    const value = normalizeFilterText(filterValues[`${alias}_${suffix}`] || '')
+    if (value) return value
+  }
+  return ''
+}
+
+function getRangeFilter(filterValues: FilterValues, field: 'frame_id' | 'frame_order' | 'time_order') {
+  const aliases = rangeAliases(field)
+  const from = firstRangeValue(filterValues, aliases, 'from')
+  const to = firstRangeValue(filterValues, aliases, 'to')
+  const legacyExact = aliases
+    .map((alias) => normalizeFilterText(filterValues[alias] || ''))
+    .find(Boolean) || ''
+
+  if (!from && !to && legacyExact) {
+    return { from: legacyExact, to: legacyExact }
+  }
+
+  return { from, to }
+}
+
+function isRangeFilterKey(field: string) {
+  return rangeFilterBaseFields.has(field) || rangeFilterKeys.has(field)
+}
+
+function parseRangeEndpoint(value: string, kind: 'integer' | 'number') {
+  const normalized = normalizeFilterText(value)
+  if (!normalized) return { value: null, invalid: false }
+  if (kind === 'integer') {
+    return integerPattern.test(normalized)
+      ? { value: Number(normalized), invalid: false }
+      : { value: null, invalid: true }
+  }
+
+  const numeric = Number(normalized)
+  return Number.isFinite(numeric)
+    ? { value: numeric, invalid: false }
+    : { value: null, invalid: true }
+}
+
+function getParsedRangeFilter(
+  filterValues: FilterValues,
+  field: 'frame_id' | 'frame_order' | 'time_order',
+  kind: 'integer' | 'number',
+) {
+  const range = getRangeFilter(filterValues, field)
+  const active = Boolean(range.from || range.to)
+  const from = parseRangeEndpoint(range.from, kind)
+  const to = parseRangeEndpoint(range.to, kind)
+  let error: string | null = null
+
+  if (from.invalid || to.invalid) {
+    error = kind === 'integer' ? 'Use integers only.' : 'Use a valid number.'
+  } else if (from.value != null && to.value != null && from.value > to.value) {
+    error = 'From must be <= To.'
+  }
+
+  return {
+    active,
+    from: from.value,
+    to: to.value,
+    error,
+  }
+}
+
+function matchesNumericRange(value: number | null, range: ReturnType<typeof getParsedRangeFilter>) {
+  if (!range.active) return true
+  if (range.error || value == null) return false
+  if (range.from != null && value < range.from) return false
+  if (range.to != null && value > range.to) return false
+  return true
+}
+
+function canonicalVideoId(result: SearchResult) {
+  return result.video_id || result.payload.video_id || ''
+}
+
+function canonicalTimeOrder(result: SearchResult) {
+  if (typeof result.payload.time_order === 'number') return result.payload.time_order
+  if (typeof result.payload.timestamp === 'number') return result.payload.timestamp
+  if (typeof result.timestamp === 'number') return result.timestamp
+  const payloadTime = parseNumberFilter(normalizeComparableText(result.payload.time_order))
+  if (payloadTime != null) return payloadTime
+  const payloadTimestamp = parseNumberFilter(normalizeComparableText(result.payload.timestamp))
+  if (payloadTimestamp != null) return payloadTimestamp
+  return null
+}
+
+function canonicalTranscript(result: SearchResult) {
+  return typeof result.payload.transcript === 'string'
+    ? result.payload.transcript
+    : typeof result.payload.caption === 'string'
+      ? result.payload.caption
+      : ''
+}
+
+function numericFrameId(result: SearchResult) {
+  const actual = normalizeComparableText(result.payload.frame_id)
+  return integerPattern.test(actual) ? Number(actual) : null
+}
+
+function numericFrameOrder(result: SearchResult) {
+  const actual = parseNumberFilter(normalizeComparableText(result.payload.frame_order))
+  return actual != null && Number.isInteger(actual) ? actual : null
+}
+
+function matchesTranscript(result: SearchResult, filterValue: string) {
+  const expected = normalizeSearchText(filterValue)
+  if (!expected) return true
+  return normalizeSearchText(canonicalTranscript(result)).includes(expected)
+}
+
+function matchesVideoId(result: SearchResult, filterValue: string) {
+  const expected = normalizeSearchText(filterValue)
+  if (!expected) return true
+  return normalizeSearchText(canonicalVideoId(result)).includes(expected)
+}
+
+function matchesGenericPayloadField(result: SearchResult, field: string, filterValue: string) {
+  const expected = normalizeSearchText(filterValue)
+  if (!expected) return true
+  return normalizeSearchText(result.payload[field]).includes(expected)
+}
+
+function getContinuousSearchSource(result: SearchResult) {
+  const videoId = normalizeComparableText(result.payload?.video_id || result.video_id)
+  const frameId = normalizeComparableText(result.payload?.frame_id)
+  return {
+    videoId,
+    frameId,
+    sourceKey: videoId && frameId ? `${videoId}:${frameId}` : '',
+  }
+}
+
+export function getActiveResultFilters(filterValues: FilterValues) {
+  const activeFilters: Array<readonly [string, string]> = []
+
+  for (const field of ['frame_id', 'frame_order', 'time_order'] as const) {
+    const range = getRangeFilter(filterValues, field)
+    if (range.from || range.to) {
+      activeFilters.push([field, `${range.from || '*'}..${range.to || '*'}`] as const)
+    }
+  }
+
+  Object.entries(filterValues)
+    .map(([field, value]) => [field, normalizeFilterText(value)] as const)
+    .filter(([field, value]) => !isRangeFilterKey(field) && value.length > 0)
+    .forEach((filter) => activeFilters.push(filter))
+
+  return activeFilters
+}
+
+export function getRangeFilterValidationError(filterValues: FilterValues, field: 'frame_id' | 'frame_order' | 'time_order') {
+  const kind = field === 'time_order' ? 'number' : 'integer'
+  return getParsedRangeFilter(filterValues, field, kind).error
+}
+
+export function getFilterValidationErrors(filterValues: FilterValues) {
+  const errors: string[] = []
+  const frameIdError = getRangeFilterValidationError(filterValues, 'frame_id')
+  const frameOrderError = getRangeFilterValidationError(filterValues, 'frame_order')
+  const timeOrderError = getRangeFilterValidationError(filterValues, 'time_order')
+
+  if (frameIdError) errors.push(`Frame Id: ${frameIdError}`)
+  if (frameOrderError) errors.push(`Frame Order: ${frameOrderError}`)
+  if (timeOrderError) errors.push(`Time Order: ${timeOrderError}`)
+
+  return errors
+}
+
+export function getFilteredSearchResults(searchResults: SearchResult[], filterValues: FilterValues) {
+  const activeFilters = getActiveResultFilters(filterValues)
+  if (activeFilters.length === 0) return searchResults
+  const frameIdRange = getParsedRangeFilter(filterValues, 'frame_id', 'integer')
+  const frameOrderRange = getParsedRangeFilter(filterValues, 'frame_order', 'integer')
+  const timeOrderRange = getParsedRangeFilter(filterValues, 'time_order', 'number')
+  const activeTextFilters = Object.entries(filterValues)
+    .map(([field, value]) => [field, normalizeFilterText(value)] as const)
+    .filter(([field, value]) => !isRangeFilterKey(field) && value.length > 0)
+
+  return searchResults.filter((result) => {
+    if (!matchesNumericRange(numericFrameId(result), frameIdRange)) return false
+    if (!matchesNumericRange(numericFrameOrder(result), frameOrderRange)) return false
+    if (!matchesNumericRange(canonicalTimeOrder(result), timeOrderRange)) return false
+
+    return activeTextFilters.every(([field, value]) => {
+      switch (field) {
+        case 'transcript':
+        case 'caption':
+          return matchesTranscript(result, value)
+        case 'video_id':
+        case 'vid_id':
+          return matchesVideoId(result, value)
+        default:
+          return matchesGenericPayloadField(result, field, value)
+      }
+    })
+  })
+}
+
+export function getSearchResultFilterSummary(searchResults: SearchResult[], filterValues: FilterValues): SearchResultFilterSummary {
+  const activeFilterCount = getActiveResultFilters(filterValues).length
+  return {
+    results: getFilteredSearchResults(searchResults, filterValues),
+    activeFilterCount,
+    invalidFilters: getFilterValidationErrors(filterValues),
+  }
+}
+
 
 interface AppState {
   currentDataset: string | null
@@ -102,10 +357,20 @@ interface AppState {
   recheckList: RecheckItem[]
   trakeState: TrakeState
   searchHistory: SearchHistoryItem[]
-  toasts: Toast[]
-  searchStatus: SearchStatus
-  submissionQueryName: string
-  submissionPackage: SubmissionPackageFile[]
+	  toasts: Toast[]
+	  searchStatus: SearchStatus
+	  continuousSearchSourceKey: string | null
+	  datasetRoot: string
+	  datasetStatus: DatasetConfigStatus | null
+	  datasetStatusMessage: string | null
+	  imagesAvailable: boolean
+	  videosAvailable: boolean
+	  canChangeDatasetRoot: boolean
+	  datasetConfigLoading: boolean
+	  datasetConfigError: string | null
+	  datasetConfigVersion: number
+	  submissionQueryName: string
+	  submissionPackage: SubmissionPackageFile[]
 
   columns: number
   topK: number
@@ -149,10 +414,14 @@ interface AppState {
   setPreviewResult: (res: SearchResult | null) => void
   setPlayingVideo: (video: SearchResult | null) => void
   setIsLoading: (loading: boolean) => void
-  setError: (err: string | null) => void
-  setDisplayMode: (mode: 'fast' | 'full') => void
-  setSearchStatus: (status: SearchStatus) => void
-  setSubmissionQueryName: (name: string) => void
+	  setError: (err: string | null) => void
+		  setDisplayMode: (mode: 'fast' | 'full') => void
+			  setSearchStatus: (status: SearchStatus) => void
+			  continuousSearchFromResult: (result: SearchResult) => Promise<void>
+			  loadDatasetConfig: () => Promise<void>
+		  setDatasetRoot: (datasetRoot: string) => Promise<boolean>
+		  chooseDatasetRoot: () => Promise<boolean>
+		  setSubmissionQueryName: (name: string) => void
   addSubmissionPackageFile: (file: SubmissionPackageFile) => void
   removeSubmissionPackageFile: (filename: string) => void
   clearSubmissionPackage: () => void
@@ -247,6 +516,21 @@ const relabelTrakeEvents = (events: TrakeEvent[]) => (
   events.map((event, index) => ({ ...event, order: index + 1, label: `Event ${index + 1}` }))
 )
 
+const datasetConfigState = (config: DatasetConfigResponse) => {
+  const version = config.version ?? 0
+  setMediaUrlVersion(version)
+
+  return {
+    datasetRoot: config.datasetRoot,
+    datasetStatus: config.status,
+    datasetStatusMessage: config.message ?? null,
+    imagesAvailable: config.imagesAvailable,
+    videosAvailable: config.videosAvailable,
+    canChangeDatasetRoot: config.canChangeDatasetRoot,
+    datasetConfigVersion: version,
+  }
+}
+
 const clampTrakeEventCount = (count: number) => {
   const normalized = Number.isFinite(count) ? Math.floor(count) : MIN_TRAKE_EVENTS
   return Math.min(MAX_TRAKE_EVENTS, Math.max(MIN_TRAKE_EVENTS, normalized))
@@ -257,7 +541,7 @@ const persistedTrakeEvents = persistedSubmission.trakeState?.events?.length
   ? relabelTrakeEvents(persistedSubmission.trakeState.events)
   : defaultTrakeEvents
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>((set, get) => ({
   currentDataset: 'aic2026_v2',
   currentModel: 'siglip2',
   availableCollections: [],
@@ -277,6 +561,16 @@ export const useStore = create<AppState>((set) => ({
   searchHistory: loadHistory(),
   toasts: [],
   searchStatus: { state: 'idle', latency: null },
+  continuousSearchSourceKey: null,
+  datasetRoot: '',
+  datasetStatus: null,
+  datasetStatusMessage: null,
+  imagesAvailable: false,
+  videosAvailable: false,
+  canChangeDatasetRoot: false,
+  datasetConfigLoading: false,
+  datasetConfigError: null,
+  datasetConfigVersion: 0,
   submissionQueryName: persistedSubmission.submissionQueryName || DEFAULT_QUERY_NAME,
   submissionPackage: persistedSubmission.submissionPackage || [],
 
@@ -325,10 +619,151 @@ export const useStore = create<AppState>((set) => ({
     metadataVisibility: { ...state.metadataVisibility, [field]: visible },
   })),
   setSearchResults: (results) => set({ searchResults: results }),
-  setRecheckList: (list) => set({ recheckList: list }),
-  setSearchStatus: (status) => set({ searchStatus: status }),
+	  setRecheckList: (list) => set({ recheckList: list }),
+	  setSearchStatus: (status) => set({ searchStatus: status }),
+	  continuousSearchFromResult: async (result) => {
+	    const state = get()
+	    if (state.continuousSearchSourceKey) {
+	      state.addToast('Visual search is already running', 'info')
+	      return
+	    }
 
-  addToSearchHistory: (item) => set((state) => {
+	    const collection = state.currentDataset
+	    const { videoId, frameId, sourceKey } = getContinuousSearchSource(result)
+	    if (!collection || !videoId || !frameId) {
+	      state.addToast('Cannot run visual search: source frame information is missing.', 'error')
+	      return
+	    }
+
+	    const startedAt = performance.now()
+	    const queryLabel = `Visual Search · ${videoId} · ${frameId}`
+	    set({
+	      continuousSearchSourceKey: sourceKey,
+	      error: null,
+	      searchStatus: { state: 'searching', latency: null },
+	    })
+
+	    try {
+	      const results = await api.continuousSearch(collection, videoId, frameId)
+	      const latency = (performance.now() - startedAt) / 1000
+	      set({
+	        searchResults: results,
+	        lastSearch: {
+	          query: queryLabel,
+	          collection,
+	          model_id: state.currentModel || 'siglip2',
+	          top_k: 100,
+	          mode: state.mode,
+	          language: 'AUTO',
+	        },
+	        continuousSearchSourceKey: null,
+	        searchStatus: { state: 'success', latency },
+	      })
+	      get().addToSearchHistory({
+	        query: queryLabel,
+	        mode: state.mode,
+	        language: 'AUTO',
+	        top_k: 100,
+	        collection,
+	        model_id: state.currentModel || 'siglip2',
+	        results,
+	        timestamp: Date.now(),
+	      })
+	      get().addToast(`Visual search complete: ${results.length} result(s)`, 'success')
+	    } catch (error) {
+	      const message = error instanceof Error ? error.message : 'Visual search failed'
+	      set({
+	        continuousSearchSourceKey: null,
+	        error: message,
+	        searchStatus: { state: 'error', latency: null },
+	      })
+	      get().addToast(message, 'error')
+	    }
+	  },
+	  loadDatasetConfig: async () => {
+	    set({ datasetConfigLoading: true, datasetConfigError: null })
+	    try {
+	      const config = await api.getDatasetConfig()
+	      set({
+	        ...datasetConfigState(config),
+	        datasetConfigLoading: false,
+	        datasetConfigError: null,
+	      })
+	    } catch (error) {
+	      const message = error instanceof Error ? error.message : 'Dataset config lookup failed'
+	      set({
+	        datasetConfigLoading: false,
+	        datasetConfigError: message,
+	      })
+	    }
+	  },
+		  setDatasetRoot: async (datasetRoot) => {
+		    set({ datasetConfigLoading: true, datasetConfigError: null })
+	    try {
+	      const config = await api.setDatasetRoot(datasetRoot)
+	      set((state) => ({
+	        ...datasetConfigState(config),
+	        datasetConfigLoading: false,
+	        datasetConfigError: null,
+	        searchResults: [...state.searchResults],
+	        previewResult: state.previewResult ? { ...state.previewResult } : null,
+	        playingVideo: state.playingVideo ? { ...state.playingVideo } : null,
+	      }))
+	      get().addToast('Dataset folder updated', 'success')
+	      return true
+	    } catch (error) {
+	      const message = error instanceof DatasetConfigRequestError
+	        ? error.message
+	        : error instanceof Error
+	          ? error.message
+	          : 'Dataset folder update failed'
+	      set({
+	        datasetConfigLoading: false,
+	        datasetConfigError: message,
+	      })
+	      get().addToast(message, 'error')
+		      return false
+		    }
+		  },
+		  chooseDatasetRoot: async () => {
+		    set({ datasetConfigLoading: true, datasetConfigError: null })
+		    try {
+		      const config = await api.chooseDatasetRoot()
+		      if (config.cancelled) {
+		        set({
+		          ...datasetConfigState(config),
+		          datasetConfigLoading: false,
+		          datasetConfigError: null,
+		        })
+		        return false
+		      }
+
+		      set((state) => ({
+		        ...datasetConfigState(config),
+		        datasetConfigLoading: false,
+		        datasetConfigError: null,
+		        searchResults: [...state.searchResults],
+		        previewResult: state.previewResult ? { ...state.previewResult } : null,
+		        playingVideo: state.playingVideo ? { ...state.playingVideo } : null,
+		      }))
+		      get().addToast('Dataset folder updated', 'success')
+		      return true
+		    } catch (error) {
+		      const message = error instanceof DatasetConfigRequestError
+		        ? error.message
+		        : error instanceof Error
+		          ? error.message
+		          : 'Dataset folder chooser failed'
+		      set({
+		        datasetConfigLoading: false,
+		        datasetConfigError: message,
+		      })
+		      get().addToast(message, 'error')
+		      return false
+		    }
+		  },
+
+		  addToSearchHistory: (item) => set((state) => {
     if (state.searchHistory.length > 0 && state.searchHistory[0].query === item.query && state.searchHistory[0].mode === item.mode) {
       return state
     }

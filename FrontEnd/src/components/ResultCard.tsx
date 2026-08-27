@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, memo } from 'react'
-import { Maximize2, Plus, CheckCircle, FileVideo, ImageOff, Loader2 } from 'lucide-react'
+import { ImageOff, Loader2, ScanSearch } from 'lucide-react'
 import { useStore } from '../store'
 import clsx from 'clsx'
 import { getImageUrl } from '../utils/media'
@@ -26,14 +26,23 @@ function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargi
 }
 
 export const ResultCard = memo(({ result }: { result: SearchResult }) => {
-  const { recheckList, setPreviewResult, setPlayingVideo, addToast, mode, trakeState, metadataVisibility, setTrakeSelectedVideo } = useStore()
+  const {
+    recheckList,
+    setPreviewResult,
+    addToast,
+    mode,
+    trakeState,
+    metadataVisibility,
+    setTrakeSelectedVideo,
+    continuousSearchSourceKey,
+    continuousSearchFromResult,
+  } = useStore()
 
   const cardRef = useRef<HTMLDivElement>(null)
   const isVisible = useIntersectionObserver(cardRef, '320px')
   
   const [imgLoaded, setImgLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
-  const [frameOrderCopied, setFrameOrderCopied] = useState(false)
 
   // ── Mode-aware selection state ───────────────────────────────
   // KIS/QA: only highlight if the candidate was added IN the current mode
@@ -65,29 +74,23 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   const timestamp = getResultTimestamp(result)
   const caption = getResultCaption(result)
   const showFps = metadataVisibility.fps !== false
+  const visualSearchSourceKey = videoId && frameId ? `${videoId}:${frameId}` : ''
+  const isVisualSearchRunning = continuousSearchSourceKey === visualSearchSourceKey
+  const isVisualSearchDisabled = Boolean(continuousSearchSourceKey)
 
   useEffect(() => {
     setImgLoaded(false)
     setImgError(!keyframeImageUrl)
   }, [keyframeImageUrl])
 
-  const handleCopyId = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (frameOrder == null) {
-      addToast('Cannot copy: frame_order is missing', 'error')
-      return
-    }
-    navigator.clipboard.writeText(String(frameOrder))
-      .then(() => {
-        setFrameOrderCopied(true)
-        window.setTimeout(() => setFrameOrderCopied(false), 1200)
-      })
-      .catch(() => addToast('Copy failed', 'error'))
-  }
-
   const handlePreview = (e: React.MouseEvent) => {
     e.stopPropagation()
     setPreviewResult(result)
+  }
+
+  const handleVisualSearch = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    continuousSearchFromResult(result)
   }
 
   const handleAddRecheck = (e: React.MouseEvent) => {
@@ -168,36 +171,13 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
 
             <div className="absolute top-2 right-2 flex flex-col gap-1.5 translate-x-8 opacity-0 group-hover:translate-x-0 group-hover:opacity-100 transition-all duration-200">
               <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setPlayingVideo(result)
-                }}
-                className="bg-slate-900/80 hover:bg-slate-800 text-white p-1.5 rounded shadow-lg backdrop-blur-sm border border-slate-700 transition-colors"
-                title="Watch Video"
+                onClick={handleVisualSearch}
+                disabled={isVisualSearchDisabled}
+                className="bg-slate-900/80 hover:bg-slate-800 text-white p-1.5 rounded shadow-lg backdrop-blur-sm border border-slate-700 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                title="Visual search from this frame"
+                aria-label="Visual search from this frame"
               >
-                <FileVideo size={14} />
-              </button>
-              <button
-                onClick={handleAddRecheck}
-                className={clsx(
-                  'p-1.5 rounded shadow-lg backdrop-blur-sm border transition-colors text-white',
-                  trakeEventLabel ? 'bg-blue-700 border-blue-500' :
-                  isRechecked ? 'bg-green-600 border-green-500' : 'bg-blue-600/90 hover:bg-blue-500 border-blue-500'
-                )}
-                title={
-                  mode === 'TRAKE'
-                    ? 'Use this result video for TRAKE'
-                    : 'Add to CSV'
-                }
-              >
-                {trakeEventLabel ? <CheckCircle size={14} /> : isRechecked ? <CheckCircle size={14} /> : <Plus size={14} />}
-              </button>
-              <button
-                onClick={handlePreview}
-                className="bg-slate-900/80 hover:bg-slate-800 text-white p-1.5 rounded shadow-lg backdrop-blur-sm border border-slate-700 transition-colors"
-                title="Expand preview"
-              >
-                <Maximize2 size={14} />
+                {isVisualSearchRunning ? <Loader2 size={14} className="animate-spin" /> : <ScanSearch size={14} />}
               </button>
             </div>
 
@@ -247,18 +227,7 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
               </button>
             </div>
 
-            <div className="flex flex-wrap gap-1 mt-0.5">
-              <button
-                disabled={frameOrder == null}
-                className={clsx(
-                  'bg-slate-800 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider',
-                  frameOrder == null ? 'text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-400 hover:text-white cursor-copy'
-                )}
-                onClick={handleCopyId}
-                title="Copy payload.frame_order"
-              >
-                {frameOrderCopied ? 'Copied' : 'Copy Frame Order'}
-              </button>
+            <div className="flex flex-wrap items-center gap-1 mt-0.5">
               <span className="bg-slate-800 text-slate-300 border border-slate-700 px-1 rounded text-[8px] uppercase tracking-wider">
                 {formatSeconds(timestamp)}
               </span>

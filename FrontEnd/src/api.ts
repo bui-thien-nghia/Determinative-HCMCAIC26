@@ -12,6 +12,34 @@ interface DescribeSchemaApiResponse {
   schema: CollectionSchema
 }
 
+export type DatasetConfigStatus = 'ready' | 'path_not_found' | 'no_permission' | 'images_missing' | 'videos_missing' | 'partial'
+
+export interface DatasetConfigResponse {
+  status: DatasetConfigStatus
+  imagesAvailable: boolean
+  videosAvailable: boolean
+  canChangeDatasetRoot: boolean
+  datasetRoot: string
+  message?: string
+  error?: string
+  attemptedDatasetRoot?: string
+  cancelled?: boolean
+  version?: number
+  videoCount?: number
+}
+
+export class DatasetConfigRequestError extends Error {
+  statusCode: number
+  config?: DatasetConfigResponse
+
+  constructor(message: string, statusCode: number, config?: DatasetConfigResponse) {
+    super(message)
+    this.name = 'DatasetConfigRequestError'
+    this.statusCode = statusCode
+    this.config = config
+  }
+}
+
 type DatasetOption = {
   id: string
   name: string
@@ -85,26 +113,25 @@ export const api = {
     }
   },
 
-  continuousSearch: async (collection: string, video_id: string, frame_id: string) => {
-    try {
-      const response = await fetch('/api/continuoussearch/', {
-        method: "POST",
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          collection: collection,
-          video_id: video_id,
-          frame_id: frame_id,
-        }),
-      })
+  continuousSearch: async (collection: string, video_id: string, frame_id: string): Promise<SearchResult[]> => {
+    const response = await fetch('/api/continuoussearch/', {
+      method: "POST",
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        collection: collection,
+        video_id: video_id,
+        frame_id: frame_id,
+      }),
+    })
 
-      const data = await readJson<SearchApiResponse>(response)
-      return Array.isArray(data.results) ? data.results : []
-    } catch (error){
-      console.error("Error: ", error)
-      return []
+    const data = await response.json().catch(() => undefined) as (SearchApiResponse & { error?: string }) | undefined
+    if (!response.ok) {
+      throw new Error(data?.error || `HTTP error! status: ${response.status}`)
     }
+
+    return Array.isArray(data?.results) ? data.results : []
   },
 
   getCollections: async (): Promise<string[]> => {
@@ -131,6 +158,60 @@ export const api = {
 
     const data = await readJson<DescribeSchemaApiResponse>(response)
     return data.schema ?? {}
+  },
+
+  getDatasetConfig: async (): Promise<DatasetConfigResponse> => {
+    const response = await fetch('/__aic_config__', {
+      method: 'GET',
+    })
+
+    return readJson<DatasetConfigResponse>(response)
+  },
+
+  setDatasetRoot: async (datasetRoot: string): Promise<DatasetConfigResponse> => {
+    const response = await fetch('/__aic_config__/dataset-root', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ datasetRoot }),
+    })
+
+    const data = await response.json().catch(() => undefined) as DatasetConfigResponse | undefined
+    if (!response.ok) {
+      throw new DatasetConfigRequestError(
+        data?.error || data?.message || `HTTP error! status: ${response.status}`,
+        response.status,
+        data,
+      )
+    }
+
+    if (!data) {
+      throw new DatasetConfigRequestError('Dataset config response was empty.', response.status)
+    }
+
+    return data
+  },
+
+  chooseDatasetRoot: async (): Promise<DatasetConfigResponse> => {
+    const response = await fetch('/__aic_config__/choose-dataset-root', {
+      method: 'POST',
+    })
+
+    const data = await response.json().catch(() => undefined) as DatasetConfigResponse | undefined
+    if (!response.ok) {
+      throw new DatasetConfigRequestError(
+        data?.error || data?.message || `HTTP error! status: ${response.status}`,
+        response.status,
+        data,
+      )
+    }
+
+    if (!data) {
+      throw new DatasetConfigRequestError('Dataset chooser response was empty.', response.status)
+    }
+
+    return data
   },
 
   doFilter: async (collection: string, key: string, value: string) => {
