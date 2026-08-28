@@ -3,11 +3,26 @@ import { api, DatasetConfigRequestError, type DatasetConfigResponse, type Datase
 import { setMediaUrlVersion } from './utils/media'
 import {
   DEFAULT_QUERY_NAME,
+  DEFAULT_TEAM_QUERY_COUNT,
+  MAX_SUBMISSION_ROWS,
+  MAX_TRAKE_EVENT_COUNT,
+  TEAM_SUBMISSION_VERSION,
+  createEmptySubmissionPackage,
+  filenameForPackageQuery,
+  getActivePackageQuery,
   getSubmissionFrame,
   getSubmissionKey,
   getSubmissionVideoId,
+  packageQueryId,
+  packageQueryContainsFrame,
+  type CandidateSource,
+  type PackageQuery,
+  type QueryCandidate,
+  type QueryCandidatePatch,
   type SubmissionPackageFile,
   type SubmissionQueryType,
+  type TeamSubmissionPackage,
+  type TrakeCandidate,
 } from './utils/submission'
 
 export interface SearchResult {
@@ -85,6 +100,14 @@ export interface Toast {
   message: string
   type?: 'success' | 'error' | 'info'
 }
+
+export type AddResultToActivePackageQueryOptions = {
+  quiet?: boolean
+  answer?: string
+  frameOrderOverride?: number | null
+  confirmCreateTrakeSequence?: (currentVideoId: string, nextVideoId: string) => boolean
+}
+
 export interface SearchStatus {
   state: 'idle' | 'searching' | 'success' | 'error'
   latency: number | null
@@ -369,8 +392,10 @@ interface AppState {
 	  datasetConfigLoading: boolean
 	  datasetConfigError: string | null
 	  datasetConfigVersion: number
+	  // Compatibility-only active workspace fields stay until the UI moves to teamSubmissionPackage.
 	  submissionQueryName: string
 	  submissionPackage: SubmissionPackageFile[]
+	  teamSubmissionPackage: TeamSubmissionPackage
 
   columns: number
   topK: number
@@ -425,6 +450,18 @@ interface AppState {
   addSubmissionPackageFile: (file: SubmissionPackageFile) => void
   removeSubmissionPackageFile: (filename: string) => void
   clearSubmissionPackage: () => void
+  setActivePackageQuery: (queryId: string) => void
+  setPackageQueryType: (queryId: string, type: SubmissionQueryType) => void
+  setPackageQueryReviewed: (queryId: string, reviewed: boolean) => void
+  setPackageQueryNotes: (queryId: string, notes: string) => void
+  setPackageQueryExpectedEventCount: (queryId: string, expectedEventCount: number | undefined) => void
+  replacePackageQueryCandidates: (queryId: string, candidates: QueryCandidate[]) => void
+  addPackageQueryCandidate: (queryId: string, candidate: QueryCandidate) => void
+  addPackageQueryCandidates: (queryId: string, candidates: QueryCandidate[]) => number
+  updatePackageQueryCandidate: (queryId: string, candidateId: string, patch: QueryCandidatePatch) => void
+  removePackageQueryCandidate: (queryId: string, candidateId: string) => void
+  reorderPackageQueryCandidates: (queryId: string, fromIdx: number, toIdx: number) => void
+  resetTeamSubmissionPackage: () => void
 
   addToRecheckList: (item: Omit<RecheckItem, 'addedAt'>) => void
   removeFromRecheckList: (id: string) => void
@@ -434,6 +471,7 @@ interface AppState {
   updateRecheckItemAnswer: (id: string, answer: string) => void
   
   addCandidate: (result: SearchResult, options?: { quiet?: boolean }) => void
+  addResultToActivePackageQuery: (result: SearchResult, options?: AddResultToActivePackageQueryOptions) => boolean
   
   setTrakeSelectedVideo: (videoId: string | null) => void
   setTrakeStage: (stage: 1 | 2) => void
@@ -462,7 +500,18 @@ const loadHistory = (): SearchHistoryItem[] => {
 
 const SUBMISSION_STORAGE_KEY = 'aic_submission_workspace'
 
-type PersistedSubmissionState = Pick<AppState, 'mode' | 'submissionQueryName' | 'recheckList' | 'trakeState' | 'submissionPackage'>
+type LegacySubmissionState = Pick<AppState, 'mode' | 'submissionQueryName' | 'recheckList' | 'trakeState' | 'submissionPackage'>
+
+interface PersistedSubmissionWorkspaceV2 extends LegacySubmissionState {
+  version: typeof TEAM_SUBMISSION_VERSION
+  teamSubmissionPackage: TeamSubmissionPackage
+  legacySubmissionPackageSnapshots: SubmissionPackageFile[]
+}
+
+type LoadedSubmissionState = Partial<LegacySubmissionState> & {
+  teamSubmissionPackage: TeamSubmissionPackage
+  legacySubmissionPackageSnapshots: SubmissionPackageFile[]
+}
 
 const compactRecheckItem = (item: RecheckItem): RecheckItem => ({
   id: item.id,
@@ -492,12 +541,404 @@ const compactTrakeState = (trakeState: TrakeState): TrakeState => ({
   })),
 })
 
-const loadSubmissionState = (): Partial<PersistedSubmissionState> => {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function isSubmissionQueryType(value: unknown): value is SubmissionQueryType {
+  return value === 'KIS' || value === 'QA' || value === 'TRAKE'
+}
+
+function safeString(value: unknown) {
+  return typeof value === 'string' ? value : ''
+}
+
+function normalizeVideoId(value: unknown) {
+  return safeString(value).trim().replace(/\.mp4$/i, '')
+}
+
+function safeIntegerOrEmpty(value: unknown): number | '' {
+  if (value === '') return ''
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isInteger(numeric) ? numeric : ''
+}
+
+function safeOptionalNumber(value: unknown): number | undefined {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(numeric) ? numeric : undefined
+}
+
+function safeSubmissionPackageFiles(value: unknown): SubmissionPackageFile[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(isPlainObject)
+    .map((file) => ({
+      filename: safeString(file.filename),
+      queryName: safeString(file.queryName),
+      queryType: isSubmissionQueryType(file.queryType) ? file.queryType : 'KIS',
+      csv: safeString(file.csv),
+      rows: Number.isFinite(Number(file.rows)) ? Number(file.rows) : 0,
+      savedAt: Number.isFinite(Number(file.savedAt)) ? Number(file.savedAt) : 0,
+    }))
+    .filter((file) => file.filename && file.csv)
+}
+
+function safeRecheckItems(value: unknown): RecheckItem[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is Record<string, unknown> => (
+      isPlainObject(item) && isPlainObject(item.payload)
+    ))
+    .map((item) => {
+      const payload = item.payload as Record<string, unknown>
+      const answerType = isSubmissionQueryType(item.answerType) ? item.answerType : 'KIS'
+      const videoId = normalizeVideoId(payload.video_id)
+      const frameId = typeof payload.frame_id === 'string' || typeof payload.frame_id === 'number'
+        ? payload.frame_id
+        : ''
+      return {
+        id: safeString(item.id) || `${answerType.toLowerCase()}-${videoId || 'missing-video'}-${safeString(payload.frame_order) || safeString(payload.frame_id) || 'empty'}`,
+        img_link: safeString(item.img_link) || safeString(payload.img_link),
+        addedAt: Number.isFinite(Number(item.addedAt)) ? Number(item.addedAt) : 0,
+        answerType,
+        answer: safeString(item.answer),
+        payload: {
+          ...payload,
+          video_id: videoId,
+          frame_id: frameId,
+          frame_order: payload.frame_order as number | null | undefined,
+          time_order: payload.time_order as number | null | undefined,
+          timestamp: payload.timestamp as number | null | undefined,
+          fps: payload.fps as number | null | undefined,
+          score: payload.score as number | undefined,
+          img_link: safeString(payload.img_link),
+        },
+      }
+    })
+}
+
+function safeTrakeState(value: unknown): TrakeState | undefined {
+  if (!isPlainObject(value)) return undefined
+  const events = Array.isArray(value.events)
+    ? value.events
+        .filter(isPlainObject)
+        .map((event, index): TrakeEvent => {
+          const selectedCandidate = safeRecheckItems([event.selectedCandidate])[0]
+          return {
+            id: safeString(event.id) || `evt-${index}`,
+            order: Number.isInteger(Number(event.order)) ? Number(event.order) : index + 1,
+            label: safeString(event.label) || `Event ${index + 1}`,
+            description: safeString(event.description) || undefined,
+            frameOrder: safeString(event.frameOrder),
+            sourceVideoId: normalizeVideoId(event.sourceVideoId) || undefined,
+            selectedCandidate,
+          }
+        })
+    : []
+
+  return {
+    selectedVideoId: normalizeVideoId(value.selectedVideoId) || null,
+    stage: value.stage === 2 ? 2 : 1,
+    activeEventId: safeString(value.activeEventId) || null,
+    events,
+  }
+}
+
+function sourceFromRecheckItem(item: RecheckItem): CandidateSource | undefined {
+  const timestamp = typeof item.payload.time_order === 'number'
+    ? item.payload.time_order
+    : typeof item.payload.timestamp === 'number'
+      ? item.payload.timestamp
+      : null
+  const score = safeOptionalNumber(item.payload.score)
+  const source: CandidateSource = {
+    resultId: item.id,
+    imgLink: item.img_link || item.payload.img_link,
+    frameId: item.payload.frame_id,
+    timestamp,
+    score,
+  }
+
+  return Object.values(source).some((value) => value !== undefined && value !== null && value !== '')
+    ? source
+    : undefined
+}
+
+function sourceFromCandidate(value: unknown): CandidateSource | undefined {
+  if (!isPlainObject(value)) return undefined
+  const source: CandidateSource = {
+    resultId: safeString(value.resultId) || undefined,
+    imgLink: safeString(value.imgLink) || undefined,
+    frameId: typeof value.frameId === 'string' || typeof value.frameId === 'number' ? value.frameId : undefined,
+    timestamp: typeof value.timestamp === 'number' ? value.timestamp : null,
+    score: safeOptionalNumber(value.score),
+  }
+
+  return Object.values(source).some((item) => item !== undefined && item !== null && item !== '')
+    ? source
+    : undefined
+}
+
+function sourceFromSearchResult(result: SearchResult): CandidateSource | undefined {
+  const timestamp = typeof result.payload.time_order === 'number'
+    ? result.payload.time_order
+    : typeof result.payload.timestamp === 'number'
+      ? result.payload.timestamp
+      : typeof result.timestamp === 'number'
+        ? result.timestamp
+        : null
+  const score = safeOptionalNumber(result.payload.score ?? result.score)
+  const source: CandidateSource = {
+    resultId: result.id,
+    imgLink: result.payload.img_link || result.image_path,
+    frameId: result.payload.frame_id,
+    timestamp,
+    score,
+  }
+
+  return Object.values(source).some((value) => value !== undefined && value !== null && value !== '')
+    ? source
+    : undefined
+}
+
+function packageCandidateId(type: SubmissionQueryType, videoId: string, frameOrder: number) {
+  const random = Math.random().toString(36).slice(2, 9)
+  return `pkg-${type.toLowerCase()}-${videoId}-${frameOrder}-${Date.now()}-${random}`
+}
+
+function getAddFrameOrder(result: SearchResult, options?: AddResultToActivePackageQueryOptions) {
+  if (Object.prototype.hasOwnProperty.call(options || {}, 'frameOrderOverride')) {
+    const numeric = options?.frameOrderOverride
+    return Number.isInteger(numeric) ? numeric as number : null
+  }
+
+  return getSubmissionFrame(result)
+}
+
+function legacyQueryMeta(value: unknown, mode: unknown): { queryNumber: number; type: SubmissionQueryType } {
+  const match = safeString(value).match(/(?:^|[^a-z0-9])query-(\d+)-(kis|qa|trake)(?:$|[^a-z0-9])/i)
+  const queryNumber = match ? Math.max(1, Math.min(DEFAULT_TEAM_QUERY_COUNT, Number(match[1]))) : 1
+  const suffixType = match?.[2]?.toLowerCase()
+  const type = suffixType === 'qa'
+    ? 'QA'
+    : suffixType === 'trake'
+      ? 'TRAKE'
+      : suffixType === 'kis'
+        ? 'KIS'
+        : isSubmissionQueryType(mode)
+          ? mode
+          : 'KIS'
+
+  return { queryNumber, type }
+}
+
+function recheckItemToPackageCandidate(item: RecheckItem, type: 'KIS' | 'QA', index: number): QueryCandidate | null {
+  const videoId = getSubmissionVideoId(item)
+  const frameOrder = getSubmissionFrame(item)
+  if (!videoId || frameOrder == null) return null
+
+  const base = {
+    id: item.id || `${type.toLowerCase()}-${videoId}-${frameOrder}-${index}`,
+    videoId,
+    frameOrder,
+    source: sourceFromRecheckItem(item),
+  }
+
+  if (type === 'QA') {
+    return {
+      ...base,
+      type: 'QA',
+      answer: item.answer || '',
+    }
+  }
+
+  return {
+    ...base,
+    type: 'KIS',
+  }
+}
+
+function trakeStateToPackageCandidate(trakeState: TrakeState | undefined): TrakeCandidate | null {
+  if (!trakeState) return null
+  const videoId = normalizeVideoId(trakeState.selectedVideoId)
+  const events = Array.isArray(trakeState.events) ? trakeState.events : []
+  const frameOrders = events.map((event) => safeIntegerOrEmpty(event.frameOrder))
+
+  if (!videoId && frameOrders.every((frameOrder) => frameOrder === '')) return null
+
+  const firstSelected = events.find((event) => event.selectedCandidate)?.selectedCandidate
+  return {
+    id: `trake-${videoId || 'missing-video'}-${frameOrders.join('-') || 'empty'}`,
+    type: 'TRAKE',
+    videoId,
+    frameOrders,
+    expectedEventCount: frameOrders.length || undefined,
+    source: firstSelected ? sourceFromRecheckItem(firstSelected) : undefined,
+  }
+}
+
+function migrateLegacySubmissionState(raw: Record<string, unknown>): LoadedSubmissionState {
+  const emptyPackage = createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT)
+  const { queryNumber, type } = legacyQueryMeta(raw.submissionQueryName, raw.mode)
+  const activeQueryId = packageQueryId(queryNumber)
+  const recheckList = safeRecheckItems(raw.recheckList)
+  const trakeState = safeTrakeState(raw.trakeState)
+  const candidates = type === 'TRAKE'
+    ? [trakeStateToPackageCandidate(trakeState)].filter((candidate): candidate is TrakeCandidate => Boolean(candidate))
+    : recheckList
+        .map((item, index) => recheckItemToPackageCandidate(item, type, index))
+        .filter((candidate): candidate is QueryCandidate => Boolean(candidate))
+  const queries = emptyPackage.queries.map((query) => (
+    query.queryNumber === queryNumber
+      ? {
+          ...query,
+          type,
+          candidates,
+          updatedAt: candidates.length > 0 ? Date.now() : 0,
+        }
+      : query
+  ))
+  const legacySnapshots = safeSubmissionPackageFiles(raw.submissionPackage)
+
+  return {
+    mode: isSubmissionQueryType(raw.mode) ? raw.mode : type,
+    submissionQueryName: safeString(raw.submissionQueryName) || DEFAULT_QUERY_NAME,
+    recheckList,
+    trakeState,
+    submissionPackage: legacySnapshots,
+    legacySubmissionPackageSnapshots: legacySnapshots,
+    teamSubmissionPackage: {
+      ...emptyPackage,
+      activeQueryId,
+      queries,
+    },
+  }
+}
+
+function sanitizeCandidate(candidate: unknown, expectedType: SubmissionQueryType): QueryCandidate | null {
+  if (!isPlainObject(candidate) || candidate.type !== expectedType) return null
+  const id = safeString(candidate.id)
+  const videoId = normalizeVideoId(candidate.videoId)
+  const source = sourceFromCandidate(candidate.source)
+
+  if (expectedType === 'KIS') {
+    return {
+      id: id || `kis-${videoId || 'missing-video'}-${safeString(candidate.frameOrder) || 'empty'}`,
+      type: 'KIS',
+      videoId,
+      frameOrder: safeIntegerOrEmpty(candidate.frameOrder),
+      source,
+    }
+  }
+
+  if (expectedType === 'QA') {
+    return {
+      id: id || `qa-${videoId || 'missing-video'}-${safeString(candidate.frameOrder) || 'empty'}`,
+      type: 'QA',
+      videoId,
+      frameOrder: safeIntegerOrEmpty(candidate.frameOrder),
+      answer: safeString(candidate.answer),
+      source,
+    }
+  }
+
+  const frameOrders = Array.isArray(candidate.frameOrders)
+    ? candidate.frameOrders.map(safeIntegerOrEmpty)
+    : []
+
+  return {
+    id: id || `trake-${videoId || 'missing-video'}-${frameOrders.join('-') || 'empty'}`,
+    type: 'TRAKE',
+    videoId,
+    frameOrders,
+    expectedEventCount: safeOptionalNumber(candidate.expectedEventCount),
+    source,
+  }
+}
+
+function sanitizePackageQuery(value: unknown, fallback: PackageQuery): PackageQuery {
+  if (!isPlainObject(value)) return fallback
+  const type = isSubmissionQueryType(value.type) ? value.type : fallback.type
+  const candidates = Array.isArray(value.candidates)
+    ? value.candidates
+        .map((candidate) => sanitizeCandidate(candidate, type))
+        .filter((candidate): candidate is QueryCandidate => Boolean(candidate))
+    : []
+
+  return {
+    id: packageQueryId(fallback.queryNumber),
+    queryNumber: fallback.queryNumber,
+    type,
+    candidates,
+    reviewed: value.reviewed === true,
+    notes: safeString(value.notes),
+    expectedEventCount: safeOptionalNumber(value.expectedEventCount),
+    updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : fallback.updatedAt,
+  }
+}
+
+function sanitizeTeamSubmissionPackage(value: unknown): TeamSubmissionPackage {
+  const emptyPackage = createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT)
+  if (!isPlainObject(value) || value.version !== TEAM_SUBMISSION_VERSION || !Array.isArray(value.queries)) {
+    return emptyPackage
+  }
+
+  const incomingByNumber = new Map<number, unknown>()
+  for (const query of value.queries) {
+    if (!isPlainObject(query)) continue
+    const queryNumber = Number(query.queryNumber)
+    if (Number.isInteger(queryNumber) && queryNumber >= 1 && queryNumber <= DEFAULT_TEAM_QUERY_COUNT) {
+      incomingByNumber.set(queryNumber, query)
+    }
+  }
+
+  const queries = emptyPackage.queries.map((fallback) => (
+    sanitizePackageQuery(incomingByNumber.get(fallback.queryNumber), fallback)
+  ))
+  const activeQueryId = queries.some((query) => query.id === value.activeQueryId)
+    ? safeString(value.activeQueryId)
+    : queries[0]?.id ?? null
+
+  return {
+    version: TEAM_SUBMISSION_VERSION,
+    activeQueryId,
+    queries,
+  }
+}
+
+const freshLoadedSubmissionState = (): LoadedSubmissionState => ({
+  teamSubmissionPackage: createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT),
+  legacySubmissionPackageSnapshots: [],
+})
+
+const loadSubmissionState = (): LoadedSubmissionState => {
   try {
     const data = localStorage.getItem(SUBMISSION_STORAGE_KEY)
-    return data ? JSON.parse(data) : {}
+    if (!data) return freshLoadedSubmissionState()
+    const parsed = JSON.parse(data) as unknown
+    if (!isPlainObject(parsed)) return freshLoadedSubmissionState()
+
+    if (parsed.version === TEAM_SUBMISSION_VERSION) {
+      const submissionPackage = safeSubmissionPackageFiles(parsed.submissionPackage)
+      const legacySnapshots = safeSubmissionPackageFiles(parsed.legacySubmissionPackageSnapshots)
+      return {
+        mode: isSubmissionQueryType(parsed.mode) ? parsed.mode : undefined,
+        submissionQueryName: safeString(parsed.submissionQueryName) || undefined,
+        recheckList: safeRecheckItems(parsed.recheckList),
+        trakeState: safeTrakeState(parsed.trakeState),
+        submissionPackage,
+        legacySubmissionPackageSnapshots: legacySnapshots.length > 0 ? legacySnapshots : submissionPackage,
+        teamSubmissionPackage: sanitizeTeamSubmissionPackage(parsed.teamSubmissionPackage),
+      }
+    }
+
+    if (parsed.version == null) {
+      return migrateLegacySubmissionState(parsed)
+    }
+
+    return freshLoadedSubmissionState()
   } catch {
-    return {}
+    return freshLoadedSubmissionState()
   }
 }
 
@@ -541,6 +982,23 @@ const persistedTrakeEvents = persistedSubmission.trakeState?.events?.length
   ? relabelTrakeEvents(persistedSubmission.trakeState.events)
   : defaultTrakeEvents
 
+function updateTeamSubmissionQuery(
+  teamSubmissionPackage: TeamSubmissionPackage,
+  queryId: string,
+  updater: (query: PackageQuery) => PackageQuery,
+): TeamSubmissionPackage {
+  let changed = false
+  const queries = teamSubmissionPackage.queries.map((query) => {
+    if (query.id !== queryId) return query
+    changed = true
+    return updater(query)
+  })
+
+  return changed
+    ? { ...teamSubmissionPackage, queries }
+    : teamSubmissionPackage
+}
+
 export const useStore = create<AppState>((set, get) => ({
   currentDataset: 'aic2026_v2',
   currentModel: 'siglip2',
@@ -573,6 +1031,7 @@ export const useStore = create<AppState>((set, get) => ({
   datasetConfigVersion: 0,
   submissionQueryName: persistedSubmission.submissionQueryName || DEFAULT_QUERY_NAME,
   submissionPackage: persistedSubmission.submissionPackage || [],
+  teamSubmissionPackage: persistedSubmission.teamSubmissionPackage,
 
   columns: 4,
   topK: 100,
@@ -805,6 +1264,171 @@ export const useStore = create<AppState>((set, get) => ({
     submissionPackage: state.submissionPackage.filter((file) => file.filename !== filename),
   })),
   clearSubmissionPackage: () => set({ submissionPackage: [] }),
+  setActivePackageQuery: (queryId) => set((state) => (
+    state.teamSubmissionPackage.queries.some((query) => query.id === queryId)
+      ? { teamSubmissionPackage: { ...state.teamSubmissionPackage, activeQueryId: queryId } }
+      : state
+  )),
+  setPackageQueryType: (queryId, type) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => query.type === type
+        ? query
+        : {
+            ...query,
+            type,
+            candidates: [],
+            reviewed: false,
+            expectedEventCount: type === 'TRAKE' ? query.expectedEventCount : undefined,
+            updatedAt: Date.now(),
+          },
+    ),
+  })),
+  setPackageQueryReviewed: (queryId, reviewed) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => ({ ...query, reviewed, updatedAt: Date.now() }),
+    ),
+  })),
+  setPackageQueryNotes: (queryId, notes) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => ({ ...query, notes, updatedAt: Date.now() }),
+    ),
+  })),
+  setPackageQueryExpectedEventCount: (queryId, expectedEventCount) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => {
+        if (query.type !== 'TRAKE') return query
+        const normalized = typeof expectedEventCount === 'number'
+          && Number.isInteger(expectedEventCount)
+          && expectedEventCount >= 1
+          && expectedEventCount <= MAX_TRAKE_EVENT_COUNT
+          ? expectedEventCount
+          : undefined
+        return {
+          ...query,
+          expectedEventCount: normalized,
+          reviewed: false,
+          updatedAt: Date.now(),
+        }
+      },
+    ),
+  })),
+  replacePackageQueryCandidates: (queryId, candidates) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => ({
+        ...query,
+        candidates: candidates
+          .map((candidate) => sanitizeCandidate(candidate, query.type))
+          .filter((candidate): candidate is QueryCandidate => Boolean(candidate)),
+        reviewed: false,
+        updatedAt: Date.now(),
+      }),
+    ),
+  })),
+  addPackageQueryCandidate: (queryId, candidate) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => {
+        const sanitized = sanitizeCandidate(candidate, query.type)
+        if (!sanitized) return query
+        return {
+          ...query,
+          candidates: [...query.candidates, sanitized],
+          reviewed: false,
+          updatedAt: Date.now(),
+        }
+      },
+    ),
+  })),
+  addPackageQueryCandidates: (queryId, candidates) => {
+    let added = 0
+    set((state) => ({
+      teamSubmissionPackage: updateTeamSubmissionQuery(
+        state.teamSubmissionPackage,
+        queryId,
+        (query) => {
+          const sanitized = candidates
+            .map((candidate) => sanitizeCandidate(candidate, query.type))
+            .filter((candidate): candidate is QueryCandidate => Boolean(candidate))
+          const available = Math.max(0, MAX_SUBMISSION_ROWS - query.candidates.length)
+          const nextCandidates = sanitized.slice(0, available)
+          added = nextCandidates.length
+          if (added === 0) return query
+          return {
+            ...query,
+            candidates: [...query.candidates, ...nextCandidates],
+            reviewed: false,
+            updatedAt: Date.now(),
+          }
+        },
+      ),
+    }))
+    return added
+  },
+  updatePackageQueryCandidate: (queryId, candidateId, patch) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => {
+        let changed = false
+        const candidates = query.candidates.map((candidate) => {
+          if (candidate.id !== candidateId) return candidate
+          const sanitized = sanitizeCandidate({
+            ...candidate,
+            ...patch,
+            id: candidate.id,
+            type: candidate.type,
+          }, candidate.type)
+          if (!sanitized) return candidate
+          changed = true
+          return sanitized
+        })
+        return changed
+          ? { ...query, candidates, reviewed: false, updatedAt: Date.now() }
+          : query
+      },
+    ),
+  })),
+  removePackageQueryCandidate: (queryId, candidateId) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => {
+        const candidates = query.candidates.filter((candidate) => candidate.id !== candidateId)
+        return candidates.length === query.candidates.length
+          ? query
+          : { ...query, candidates, reviewed: false, updatedAt: Date.now() }
+      },
+    ),
+  })),
+  reorderPackageQueryCandidates: (queryId, fromIdx, toIdx) => set((state) => ({
+    teamSubmissionPackage: updateTeamSubmissionQuery(
+      state.teamSubmissionPackage,
+      queryId,
+      (query) => {
+        if (fromIdx < 0 || fromIdx >= query.candidates.length) return query
+        if (toIdx < 0 || toIdx >= query.candidates.length) return query
+        if (fromIdx === toIdx) return query
+        const candidates = [...query.candidates]
+        const [moved] = candidates.splice(fromIdx, 1)
+        candidates.splice(toIdx, 0, moved)
+        return { ...query, candidates, reviewed: false, updatedAt: Date.now() }
+      },
+    ),
+  })),
+  resetTeamSubmissionPackage: () => set({
+    teamSubmissionPackage: createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT),
+  }),
 
   addToRecheckList: (item) => set((state) => {
     if (state.recheckList.length >= 100) return state
@@ -851,6 +1475,123 @@ export const useStore = create<AppState>((set, get) => ({
     
     return { recheckList: newList }
   }),
+
+  addResultToActivePackageQuery: (result, options = {}) => {
+    const state = get()
+    const quiet = options.quiet === true
+    const activeQuery = getActivePackageQuery(state.teamSubmissionPackage)
+    if (!activeQuery) {
+      if (!quiet) state.addToast('Select an active submission query first.', 'error')
+      return false
+    }
+
+    const frameOrder = getAddFrameOrder(result, options)
+    if (frameOrder == null) {
+      if (!quiet) state.addToast('Cannot add: frame_order is missing or invalid', 'error')
+      return false
+    }
+
+    const videoId = getSubmissionVideoId(result)
+    if (!videoId) {
+      if (!quiet) state.addToast('Cannot add: video_id is missing', 'error')
+      return false
+    }
+
+    const queryName = filenameForPackageQuery(activeQuery).replace(/\.csv$/i, '')
+    const source = sourceFromSearchResult(result)
+
+    if (activeQuery.type === 'KIS' || activeQuery.type === 'QA') {
+      if (activeQuery.candidates.length >= MAX_SUBMISSION_ROWS) {
+        if (!quiet) state.addToast(`Maximum ${MAX_SUBMISSION_ROWS} candidates allowed for ${queryName}`, 'error')
+        return false
+      }
+
+      if (packageQueryContainsFrame(activeQuery, videoId, frameOrder)) {
+        if (!quiet) state.addToast('Candidate already exists in this query.', 'error')
+        return false
+      }
+
+      const candidate: QueryCandidate = activeQuery.type === 'QA'
+        ? {
+            id: packageCandidateId('QA', videoId, frameOrder),
+            type: 'QA',
+            videoId,
+            frameOrder,
+            answer: options.answer || '',
+            source,
+          }
+        : {
+            id: packageCandidateId('KIS', videoId, frameOrder),
+            type: 'KIS',
+            videoId,
+            frameOrder,
+            source,
+          }
+
+      state.addPackageQueryCandidate(activeQuery.id, candidate)
+      if (!quiet) {
+        state.addToast(
+          activeQuery.type === 'QA'
+            ? `Added to ${queryName}. Answer required.`
+            : `Added to ${queryName}`,
+          'success',
+        )
+      }
+      return true
+    }
+
+    const trakeCandidates = activeQuery.candidates.filter((candidate): candidate is TrakeCandidate => (
+      candidate.type === 'TRAKE'
+    ))
+    const activeSequence = trakeCandidates[trakeCandidates.length - 1]
+    const createSequence = () => {
+      if (activeQuery.candidates.length >= MAX_SUBMISSION_ROWS) {
+        if (!quiet) state.addToast(`Maximum ${MAX_SUBMISSION_ROWS} TRAKE sequences allowed for ${queryName}`, 'error')
+        return false
+      }
+      state.addPackageQueryCandidate(activeQuery.id, {
+        id: packageCandidateId('TRAKE', videoId, frameOrder),
+        type: 'TRAKE',
+        videoId,
+        frameOrders: [frameOrder],
+        source,
+      })
+      if (!quiet) state.addToast(`Added frame ${frameOrder} to ${queryName}`, 'success')
+      return true
+    }
+
+    if (!activeSequence) {
+      return createSequence()
+    }
+
+    if (activeSequence.videoId && activeSequence.videoId !== videoId) {
+      const confirmed = options.confirmCreateTrakeSequence?.(activeSequence.videoId, videoId) ?? false
+      if (!confirmed) return false
+      return createSequence()
+    }
+
+    const filledFrameOrders = activeSequence.frameOrders.filter((value): value is number => typeof value === 'number')
+    if (filledFrameOrders[filledFrameOrders.length - 1] === frameOrder) {
+      if (!quiet) state.addToast('Frame already exists as the last TRAKE event.', 'error')
+      return false
+    }
+
+    const nextFrameOrders = [...activeSequence.frameOrders]
+    const emptyIdx = nextFrameOrders.findIndex((value) => value === '')
+    if (emptyIdx >= 0) {
+      nextFrameOrders[emptyIdx] = frameOrder
+    } else {
+      nextFrameOrders.push(frameOrder)
+    }
+
+    state.updatePackageQueryCandidate(activeQuery.id, activeSequence.id, {
+      videoId,
+      frameOrders: nextFrameOrders,
+      source: activeSequence.source || source,
+    })
+    if (!quiet) state.addToast(`Added frame ${frameOrder} to ${queryName}`, 'success')
+    return true
+  },
 
   addToast: (message, type = 'info') => {
     const id = Math.random().toString(36).slice(2, 11)
@@ -1091,12 +1832,15 @@ export const useStore = create<AppState>((set, get) => ({
 
 useStore.subscribe((state) => {
   try {
-    const payload: PersistedSubmissionState = {
+    const payload: PersistedSubmissionWorkspaceV2 = {
+      version: TEAM_SUBMISSION_VERSION,
       mode: state.mode,
       submissionQueryName: state.submissionQueryName,
       recheckList: state.recheckList.map(compactRecheckItem),
       trakeState: compactTrakeState(state.trakeState),
       submissionPackage: state.submissionPackage,
+      legacySubmissionPackageSnapshots: state.submissionPackage,
+      teamSubmissionPackage: state.teamSubmissionPackage,
     }
     localStorage.setItem(SUBMISSION_STORAGE_KEY, JSON.stringify(payload))
   } catch {

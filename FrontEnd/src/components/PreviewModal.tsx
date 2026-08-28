@@ -15,6 +15,13 @@ import {
 	  getResultVideoPath,
 	  getResultVideoId,
 	} from '../utils/results'
+import {
+  getActivePackageQuery,
+  getSubmissionFrame,
+  getSubmissionVideoId,
+  packageQueryContainsResult,
+  type QaCandidate,
+} from '../utils/submission'
 
 function formatFieldLabel(field: string) {
   return field
@@ -38,13 +45,11 @@ export default function PreviewModal() {
     setPreviewResult,
 	    searchResults,
 	    filterValues,
-	    setPlayingVideo,
+    setPlayingVideo,
     addToast,
-    addCandidate,
+    addResultToActivePackageQuery,
     lastSearch,
-    mode,
-	    recheckList,
-	    updateRecheckItemAnswer,
+    teamSubmissionPackage,
 	    collectionSchema,
 	    metadataVisibility,
 	  } = useStore()
@@ -71,12 +76,20 @@ export default function PreviewModal() {
   const frameId = getResultFrameId(previewResult)
 	  const timestamp = getResultTimestamp(previewResult)
 	  const caption = getResultCaption(previewResult)
-	  const imagePath = getRawImagePath(previewResult)
+  const imagePath = getRawImagePath(previewResult)
 	  const videoPath = getResultVideoPath(previewResult)
 	  const videoSource = videoPath || videoId
 	  const portableImagePath = getPortableImagePath(imagePath)
+  const activePackageQuery = getActivePackageQuery(teamSubmissionPackage)
   const existingCandidate = previewResult
-    ? recheckList.find((item) => item.id === previewResult.id)
+    ? packageQueryContainsResult(activePackageQuery, previewResult)
+    : false
+  const existingQaCandidate = previewResult && activePackageQuery?.type === 'QA'
+    ? activePackageQuery.candidates.find((candidate): candidate is QaCandidate => (
+        candidate.type === 'QA'
+        && candidate.videoId === getSubmissionVideoId(previewResult)
+        && candidate.frameOrder === getSubmissionFrame(previewResult)
+      ))
     : undefined
 
   const currentNeighborKey = useMemo(() => `${videoId}:${frameId}`, [videoId, frameId])
@@ -125,7 +138,12 @@ export default function PreviewModal() {
 
   const handleAddToBuilder = () => {
     if (!previewResult) return
-    addCandidate(previewResult)
+    addResultToActivePackageQuery(previewResult, {
+      answer: activePackageQuery?.type === 'QA' ? qaAnswer : undefined,
+      confirmCreateTrakeSequence: (currentVideoId, nextVideoId) => (
+        window.confirm(`Current TRAKE sequence belongs to ${currentVideoId}. Create a new sequence for ${nextVideoId}?`)
+      ),
+    })
   }
 
   const handleCopy = async (value: string, label: string) => {
@@ -143,14 +161,8 @@ export default function PreviewModal() {
   }
 
   const handleAddQaCandidate = () => {
-    if (!previewResult || mode !== 'QA') return
-    addCandidate(previewResult)
-    const qaCandidate = useStore.getState().recheckList.find((item) => (
-      item.id === previewResult.id && item.answerType === 'QA'
-    ))
-    if (qaCandidate && qaAnswer.trim()) {
-      updateRecheckItemAnswer(previewResult.id, qaAnswer)
-    }
+    if (!previewResult || activePackageQuery?.type !== 'QA') return
+    addResultToActivePackageQuery(previewResult, { answer: qaAnswer })
   }
 
 	  const handleNeighborClick = (neighbor: NeighborFrame) => {
@@ -197,9 +209,8 @@ export default function PreviewModal() {
 
   useEffect(() => {
     if (!previewResult) return
-    const existing = recheckList.find((item) => item.id === previewResult.id && item.answerType === 'QA')
-    setQaAnswer(existing?.answer || '')
-  }, [previewResult?.id, mode])
+    setQaAnswer(existingQaCandidate?.answer || '')
+  }, [activePackageQuery?.id, existingQaCandidate?.id, previewResult?.id])
 
   useEffect(() => {
     let cancelled = false
@@ -644,7 +655,7 @@ export default function PreviewModal() {
 
             {activeTab === 'Q&A Answer' && (
               <div className="flex flex-col gap-4">
-                {mode === 'QA' ? (
+                {activePackageQuery?.type === 'QA' ? (
                   <>
 	                    <InfoBlock label="Question" value={currentQuery || '--'} copyLabel="Question" copyValue={currentQuery} copiedField={copiedField} onCopy={handleCopy} />
 	                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} copyLabel="Context" copyValue={caption} copiedField={copiedField} onCopy={handleCopy} />
@@ -669,7 +680,7 @@ export default function PreviewModal() {
                 ) : (
                   <>
                     <div className="rounded border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">
-                      QA answer editing is available in QA mode.
+                      QA answer editing is available when the active package query is Q&A.
                     </div>
 	                    <InfoBlock label="Frame Context" value={caption || 'No transcript available for this frame.'} copyLabel="Context" copyValue={caption} copiedField={copiedField} onCopy={handleCopy} />
                   </>

@@ -5,7 +5,13 @@ import clsx from 'clsx'
 import { getImageUrl } from '../utils/media'
 import type { SearchResult } from '../store'
 import { formatSeconds, getResultCaption, getResultFrameId, getResultImagePath, getResultTimestamp, getResultVideoId } from '../utils/results'
-import { getSubmissionFrame, getSubmissionKey, getSubmissionVideoId } from '../utils/submission'
+import {
+  getActivePackageQuery,
+  getSubmissionFrame,
+  getSubmissionVideoId,
+  packageQueryContainsResult,
+  packageQueryHasTrakeVideo,
+} from '../utils/submission'
 
 function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargin = '400px') {
   const [isIntersecting, setIntersecting] = useState(false)
@@ -27,13 +33,11 @@ function useIntersectionObserver(ref: React.RefObject<Element | null>, rootMargi
 
 export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   const {
-    recheckList,
     setPreviewResult,
     addToast,
-    mode,
-    trakeState,
+    addResultToActivePackageQuery,
+    teamSubmissionPackage,
     metadataVisibility,
-    setTrakeSelectedVideo,
     continuousSearchSourceKey,
     continuousSearchFromResult,
   } = useStore()
@@ -44,28 +48,10 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
   const [imgLoaded, setImgLoaded] = useState(false)
   const [imgError, setImgError] = useState(false)
 
-  // ── Mode-aware selection state ───────────────────────────────
-  // KIS/QA: only highlight if the candidate was added IN the current mode
-  const submissionKey = getSubmissionKey(result)
+  const activePackageQuery = getActivePackageQuery(teamSubmissionPackage)
   const candidateVideoId = getSubmissionVideoId(result)
-  const isInCurrentModeList = (mode === 'KIS' || mode === 'QA')
-    ? recheckList.some((r) => getSubmissionKey(r) === submissionKey && r.answerType === mode)
-    : false
-
-  // TRAKE: check if this result's video is the selectedVideoId
-  const isTrakeVideo = mode === 'TRAKE' && !!trakeState.selectedVideoId
-    && candidateVideoId === trakeState.selectedVideoId
-
-  // TRAKE: check if this exact frame is assigned to an event slot
-  const trakeEventLabel = mode === 'TRAKE'
-    ? trakeState.events.find(e =>
-        e.selectedCandidate &&
-        getSubmissionKey(e.selectedCandidate) === submissionKey
-      )?.label ?? null
-    : null
-
-  // The generic "isRechecked" (green checkmark on + button) only applies to KIS/QA
-  const isRechecked = isInCurrentModeList
+  const isAddedToActiveQuery = packageQueryContainsResult(activePackageQuery, result)
+  const isActiveTrakeVideo = packageQueryHasTrakeVideo(activePackageQuery, candidateVideoId)
   const imagePath = getResultImagePath(result)
   const keyframeImageUrl = getImageUrl(imagePath)
   const videoId = getResultVideoId(result)
@@ -95,23 +81,13 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
 
   const handleAddRecheck = (e: React.MouseEvent) => {
     e.stopPropagation()
-    if (isRechecked) return
+    if (isAddedToActiveQuery) return
     try {
-      if (mode === 'TRAKE') {
-        const nextVideoId = videoId?.replace(/\.mp4$/i, '')
-        if (!nextVideoId) {
-          addToast('Cannot use video: video_id is missing', 'error')
-          return
-        }
-        if (trakeState.selectedVideoId && trakeState.selectedVideoId !== nextVideoId) {
-          const replace = window.confirm(`Replace TRAKE Video ID ${trakeState.selectedVideoId} with ${nextVideoId}?`)
-          if (!replace) return
-        }
-        setTrakeSelectedVideo(nextVideoId)
-        addToast(`TRAKE Video ID set to ${nextVideoId}`, 'success')
-        return
-      }
-      useStore.getState().addCandidate(result)
+      addResultToActivePackageQuery(result, {
+        confirmCreateTrakeSequence: (currentVideoId, nextVideoId) => (
+          window.confirm(`Current TRAKE sequence belongs to ${currentVideoId}. Create a new sequence for ${nextVideoId}?`)
+        ),
+      })
     } catch (err) {
       console.error(err)
       addToast('Add failed', 'error')
@@ -129,12 +105,8 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
       }}
       className={clsx(
         'group flex flex-col bg-slate-800 border rounded-lg overflow-hidden cursor-pointer transition-colors shadow-sm h-full',
-        // KIS/QA selected candidate
-        isInCurrentModeList ? 'border-green-500' :
-        // TRAKE assigned event frame
-        trakeEventLabel ? 'border-blue-500' :
-        // TRAKE selected video (subtle)
-        isTrakeVideo ? 'border-cyan-700/70' :
+        isAddedToActiveQuery ? 'border-green-500' :
+        isActiveTrakeVideo ? 'border-cyan-700/70' :
         'border-slate-700 hover:border-blue-500 cursor-grab active:cursor-grabbing'
       )}
     >
@@ -185,14 +157,13 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
               {(result.score || 0).toFixed(4)}
             </div>
 
-            {/* TRAKE badges — bottom-left of image */}
-            {trakeEventLabel && (
-              <div className="absolute bottom-1.5 left-1.5 bg-blue-600/90 backdrop-blur-sm text-[9px] font-bold uppercase tracking-wider text-white px-1.5 py-0.5 rounded border border-blue-400/50">
-                {trakeEventLabel}
+            {isAddedToActiveQuery && (
+              <div className="absolute bottom-1.5 left-1.5 bg-emerald-700/90 backdrop-blur-sm text-[9px] font-bold uppercase tracking-wider text-white px-1.5 py-0.5 rounded border border-emerald-400/50">
+                Active Query
               </div>
             )}
-            {isTrakeVideo && !trakeEventLabel && (
-              <div className="absolute bottom-1.5 left-1.5 bg-cyan-900/80 backdrop-blur-sm text-[9px] font-bold uppercase tracking-wider text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-700/60">
+            {!isAddedToActiveQuery && isActiveTrakeVideo && (
+              <div className="absolute bottom-1.5 left-1.5 bg-blue-600/90 backdrop-blur-sm text-[9px] font-bold uppercase tracking-wider text-white px-1.5 py-0.5 rounded border border-blue-400/50">
                 TRAKE VIDEO
               </div>
             )}
@@ -216,14 +187,14 @@ export const ResultCard = memo(({ result }: { result: SearchResult }) => {
               <button
                 className={clsx(
                   'px-2 py-1 rounded border text-[9px] shrink-0 font-bold uppercase transition-colors',
-                  isRechecked || trakeEventLabel
+                  isAddedToActiveQuery
                     ? 'bg-emerald-900/40 border-emerald-700/60 text-emerald-300'
                     : 'bg-blue-600/20 hover:bg-blue-600/40 border-blue-500/50 text-blue-300'
                 )}
                 onClick={handleAddRecheck}
-                title={mode === 'TRAKE' ? 'Use this result video for TRAKE' : 'Add to active CSV'}
+                title="Add to active package query"
               >
-                {isRechecked || trakeEventLabel ? 'Added' : mode === 'TRAKE' ? 'Use Video' : '+ Add'}
+                {isAddedToActiveQuery ? 'Added' : '+ Add'}
               </button>
             </div>
 

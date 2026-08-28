@@ -12,6 +12,11 @@ import {
   parseTimestampInput,
   resolveTimestamp,
 } from '../utils/results'
+import {
+  getActivePackageQuery,
+  normalizeSubmissionVideoId,
+  packageQueryContainsFrame,
+} from '../utils/submission'
 
 type VideoModalProps = {
   isOpen: boolean
@@ -36,7 +41,7 @@ export default function VideoModal({
 }: VideoModalProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const videoRequestRef = useRef(0)
-  const { addCandidate, recheckList } = useStore()
+  const { addResultToActivePackageQuery, addToast, teamSubmissionPackage } = useStore()
   const selectedTimestamp = result ? resolveTimestamp(result) : Number(timestamp || 0)
   const [currentTime, setCurrentTime] = useState<number | null>(null)
   const [duration, setDuration] = useState(0)
@@ -52,13 +57,14 @@ export default function VideoModal({
   const videoSourceKey = videoUrl || ''
   const resultSeekKey = `${result?.id ?? videoId}|${videoSourceKey}|${selectedTimestamp}`
   const selectedTimeLabel = formatSeconds(selectedTimestamp)
-  const isAdded = !!result && recheckList.some((item) => item.id === result.id)
   const offset = currentTime == null ? null : currentTime - selectedTimestamp
   const offsetLabel = offset == null
     ? '-- from frame'
     : Math.abs(offset) < 0.005 ? '±0.00s' : `${offset > 0 ? '+' : ''}${offset.toFixed(2)}s`
   const currentFrameOrder = getCurrentFrameOrder(result, currentTime, selectedTimestamp)
   const currentFrameOrderLabel = currentFrameOrder == null ? '--' : String(currentFrameOrder)
+  const activePackageQuery = getActivePackageQuery(teamSubmissionPackage)
+  const isAdded = packageQueryContainsFrame(activePackageQuery, videoId, currentFrameOrder)
 
   const clampTime = (seconds: number) => {
     if (!Number.isFinite(seconds)) return 0
@@ -150,13 +156,20 @@ export default function VideoModal({
 
   const handleAddToBuilder = () => {
     if (!result) return
-    addCandidate(result)
+    addResultToActivePackageQuery(result, {
+      frameOrderOverride: currentFrameOrder,
+      confirmCreateTrakeSequence: (currentVideoId, nextVideoId) => (
+        window.confirm(`Current TRAKE sequence belongs to ${currentVideoId}. Create a new sequence for ${nextVideoId}?`)
+      ),
+    })
   }
 
   const handleCopyCurrentFrameOrder = async () => {
     if (currentFrameOrder == null) return
-    const copied = await copyText(String(currentFrameOrder))
+    const rowText = `${normalizeSubmissionVideoId(videoId)},${currentFrameOrder}`
+    const copied = await copyText(rowText)
     if (!copied) return
+    addToast(`Copied ${rowText}`, 'success')
     setCurrentFrameCopied(true)
     window.setTimeout(() => setCurrentFrameCopied(false), 1200)
   }
@@ -329,14 +342,6 @@ export default function VideoModal({
 
           <div className="flex shrink-0 items-center gap-2">
             <button
-              onClick={handleAddToBuilder}
-              disabled={!result}
-              className="rounded bg-blue-600 px-2.5 py-1.5 text-xs font-bold text-white transition hover:bg-blue-500 disabled:opacity-40 flex items-center gap-1.5"
-            >
-              <Plus size={13} />
-              {isAdded ? 'ADDED ✓' : 'ADD'}
-            </button>
-            <button
               onClick={onClose}
               className="rounded bg-slate-800 p-1.5 text-slate-300 transition hover:bg-red-600 hover:text-white"
               title="Close video"
@@ -447,10 +452,20 @@ export default function VideoModal({
                 onClick={handleCopyCurrentFrameOrder}
                 disabled={currentFrameOrder == null}
                 className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300 transition hover:border-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                title="Copy current competition Frame Idx"
+                title="Copy video ID + current Frame Idx"
               >
                 <Copy size={11} />
-                {currentFrameCopied ? 'Copied' : 'Copy'}
+                {currentFrameCopied ? 'Copied' : 'Copy Row'}
+              </button>
+              <button
+                onClick={handleAddToBuilder}
+                disabled={!result || currentFrameOrder == null}
+                className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-0.5 text-[10px] font-bold uppercase text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Add current frame to active query"
+                aria-label="Add current frame to active query"
+              >
+                <Plus size={11} />
+                {isAdded ? 'Added' : 'Add Frame'}
               </button>
               {inputError && <span className="text-amber-400">{inputError}</span>}
             </div>
