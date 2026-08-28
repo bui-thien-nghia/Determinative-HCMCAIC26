@@ -451,7 +451,10 @@ function chooseDatasetRootWindows() {
     'Add-Type -AssemblyName System.Windows.Forms',
     '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
     '$dialog.Description = "Select Dataset Folder"',
+    '$dialog.RootFolder = [System.Environment+SpecialFolder]::MyComputer',
     '$dialog.ShowNewFolderButton = $false',
+    '$initialPath = [System.Environment]::GetEnvironmentVariable("AIC_INITIAL_DATASET_ROOT")',
+    'if ($initialPath -and [System.IO.Directory]::Exists($initialPath)) { $dialog.SelectedPath = $initialPath }',
     '$result = $dialog.ShowDialog()',
     'if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath); exit 0 }',
     'exit 2',
@@ -461,7 +464,13 @@ function chooseDatasetRootWindows() {
     execFile(
       'powershell.exe',
       ['-NoProfile', '-STA', '-Command', script],
-      { timeout: 120000 },
+      {
+        timeout: 120000,
+        env: {
+          ...process.env,
+          AIC_INITIAL_DATASET_ROOT: mediaState.datasetRoot,
+        },
+      },
       (error, stdout, stderr) => {
         if (error) {
           if ('code' in error && error.code === 2) {
