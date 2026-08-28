@@ -59,7 +59,6 @@ def Search(request):
         query = validated_data.get("query")
         collection = validated_data.get("collection")
         top_k = validated_data.get("top_k")
-        model_id = validated_data.get("model_id")
 
         try:
             points = query_manager.search(
@@ -83,12 +82,13 @@ def AggregatedSearch(request):
 
         collection = validated_data.get("collection")
         query = validated_data.get("query")
-        model_id = validated_data.get("model_id")
+        top_k = validated_data.get("top_k")
 
         try:
             points = query_manager.aggregated_search(
                 collection_name=collection,
                 query=query,
+                search_limit=top_k
             )
         except Exception as e:
             return Response({'error': str(e)}, status=500)
@@ -181,5 +181,3 @@ def doFilter(request):
         return Response({'error': str(e)}, status=500)
 
     return Response({'results': formatResult(points)}, status = 200)
-
-        

@@ -54,15 +54,16 @@ class SigLIP2Model(ExtractionModel):
     
     def load(self):
         super().load()
-        self.model = AutoModel.from_pretrained(
-            self.name,
-            dtype=torch.bfloat16 if self.quantized else torch.float32,
-            attn_implementation=self.attention_implementation
-        ).eval()
-        if self.device != "default":
-            self.model = self.model.to(self.device)
-        self.device = str(self.model.device)
-        self.processor = AutoProcessor.from_pretrained(self.name)
+        with disable_tqdm():
+            self.model = AutoModel.from_pretrained(
+                self.name,
+                dtype=torch.bfloat16 if self.quantized else torch.float32,
+                attn_implementation=self.attention_implementation
+            ).eval()
+            if self.device != "default":
+                self.model = self.model.to(self.device)
+            self.device = str(self.model.device)
+            self.processor = AutoProcessor.from_pretrained(self.name)
 
 
     def run(self, samples: list[Image.Image] | list[str], batch_size: int = 32):
@@ -99,8 +100,9 @@ class TransNetV2Model(ExtractionModel):
     
     def load(self):
         super().load()
-        self.model = TransNetV2(device="auto" if self.device == "default" else self.device).eval()
-        self.device = str(self.model.device)
+        with disable_tqdm():
+            self.model = TransNetV2(device="auto" if self.device == "default" else self.device).eval()
+            self.device = str(self.model.device)
         # if not self.quantized: return
         # self.model = self.model.to(dtype=torch.float16)
 
@@ -122,7 +124,7 @@ class TransNetV2Model(ExtractionModel):
         frame_id = 0
         for scene in scenes:
             fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_order = scene["start_frame"] + fps // 2
+            frame_order = scene["start_frame"] + int(fps * 0.35)
             time_order = frame_order / fps
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_order)
             ret, frame = cap.read()
@@ -149,9 +151,10 @@ class FasterWhisperModel(ExtractionModel):
 
     def load(self):
         super().load()
-        if self.device == "default": self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = WhisperModel(self.name, self.device, compute_type="int8_float16" if self.quantized else "default")
-        self.model = BatchedInferencePipeline(self.model)
+        with disable_tqdm():
+            if self.device == "default": self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.model = WhisperModel(self.name, self.device, compute_type="int8_float16" if self.quantized else "default")
+            self.model = BatchedInferencePipeline(self.model)
 
 
     def run(
@@ -193,17 +196,18 @@ class BGEM3Model(ExtractionModel):
     
     def load(self, return_dense=True, return_sparse=True, return_colbert=False):
         super().load()
-        if self.device == "default": self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = BGEM3FlagModel(
-            self.name,
-            normalize_embeddings=True,
-            use_bf16=self.quantized,
-            devices=self.device,
-            return_dense=return_dense,
-            return_sparse=return_sparse,
-            return_colbert_vecs=return_colbert,
-            model_kwargs={"attn_implementation": self.attention_implementation}
-        )
+        with disable_tqdm():
+            if self.device == "default": self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.model = BGEM3FlagModel(
+                self.name,
+                normalize_embeddings=True,
+                use_bf16=self.quantized,
+                devices=self.device,
+                return_dense=return_dense,
+                return_sparse=return_sparse,
+                return_colbert_vecs=return_colbert,
+                model_kwargs={"attn_implementation": self.attention_implementation}
+            )
 
 
     def run(
@@ -226,6 +230,7 @@ class BGEM3Model(ExtractionModel):
         )
         return feat_dicts["dense_vecs"], feat_dicts["lexical_weights"], feat_dicts["colbert_vecs"]
 
+
 # BEiT3
 class BEiT3Model(ExtractionModel):
     def __init__(self, name, device="default", quantized=True, attention_implementation=None):
@@ -234,15 +239,16 @@ class BEiT3Model(ExtractionModel):
     
     def load(self):
         super().load()
-        self.model = AutoModel.from_pretrained(
-            self.name,
-            dtype=torch.bfloat16 if self.quantized else torch.float32,
-            attn_implementation=self.attention_implementation
-        ).eval()
-        if self.device != "default":
-            self.model = self.model.to(self.device)
-        self.device = str(self.model.device)
-        self.processor = AutoProcessor.from_pretrained(self.name)
+        with disable_tqdm():
+            self.model = AutoModel.from_pretrained(
+                self.name,
+                dtype=torch.bfloat16 if self.quantized else torch.float32,
+                attn_implementation=self.attention_implementation
+            ).eval()
+            if self.device != "default":
+                self.model = self.model.to(self.device)
+            self.device = str(self.model.device)
+            self.processor = AutoProcessor.from_pretrained(self.name)
 
 
     def run(self, imgs: list[Image.Image], batch_size: int = 32):

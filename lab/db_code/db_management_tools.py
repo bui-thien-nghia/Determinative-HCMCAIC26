@@ -6,7 +6,7 @@ from functools import partial
 from scipy.sparse import csr_matrix
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from .models import *
+from models import *
 from tqdm import tqdm
 
 class DataLoader:
@@ -545,6 +545,67 @@ class QueryManager:
         return sorted(points, key=lambda x: x.score, reverse=True)
 
 
+    def logging(
+        self,
+        query: str,
+        points: list,
+        init_scores: np.ndarray,
+        temporal_scores: list[float],
+        visual_scores: list[float],
+        agg_scores: np.ndarray,
+        final_scores: np.ndarray,
+        neighbor_logs: list[list[dict]]
+    ):
+        import os
+        import re
+        import pandas as pd
+
+
+        words = re.sub(r'[^\w\s]', '', query).split()[:10]
+        first_10_words = "_".join(words) if words else "empty_query"
+        os.makedirs("query_report", exist_ok=True)
+        point_csv_path = os.path.join("query_report", f"point_score___{first_10_words}.csv")
+        neighbor_csv_path = os.path.join("query_report", f"neighbor_score___{first_10_words}.csv")
+
+        point_records = []
+        flat_neighbor_records = []
+        for idx, (point, init_s, temp_s, vis_s, agg_s, final_s) in enumerate(
+            zip(points, init_scores, temporal_scores, visual_scores, agg_scores, final_scores)
+        ):
+            point_id = f"{point.payload.get('vid_id', '')}_{point.payload.get('frame_id', '')}"
+            cand_time = float(point.payload["time_order"])
+
+            point_records.append({
+                "point_id": point_id,
+                "vid_id": point.payload.get("vid_id"),
+                "frame_id": point.payload.get("frame_id"),
+                "cand_time_order": cand_time,
+                "init_score": float(init_s),
+                "temporal_score": float(temp_s),
+                "visual_score": float(vis_s),
+                "agg_score": float(agg_s),
+                "final_score": float(final_s)
+            })
+
+            for n_info in neighbor_logs[idx]:
+                flat_neighbor_records.append({
+                    "point_id": point_id,
+                    "cand_time_order": cand_time,
+                    "neigh_time_order": n_info["neigh_time_order"],
+                    "time_distance": n_info["time_distance"],
+                    "similarity_to_q": n_info["similarity_to_q"],
+                    "temporal_decay": n_info["temporal_decay"],
+                    "final_agg_value": n_info["final_agg_value"]
+                })
+
+        df_points = pd.DataFrame(point_records).round(3)
+        df_points.to_csv(point_csv_path, index=False)
+        df_neighbors = pd.DataFrame(flat_neighbor_records).round(3)
+        if not df_neighbors.empty:
+            df_neighbors = df_neighbors.sort_values(by=["point_id", "neigh_time_order"]).reset_index(drop=True)
+        df_neighbors.to_csv(neighbor_csv_path, index=False)
+
+
     def aggregated_search_v2(
         self,
         collection_name: str,
@@ -570,28 +631,6 @@ class QueryManager:
         eps: float = 1e-8,
         logging=False,
     ):
-        def _log(point, neighbors, bonus, decays):
-            import pandas as pd
-            point_time = float(point.payload["time_order"])
-            
-            records = []
-            for neighbor, b, d in zip(neighbors, bonus, decays):
-                t_n = float(neighbor.payload["time_order"])
-                records.append({
-                    "Time (s)": t_n,
-                    "Distance (s)": abs(t_n - point_time),
-                    "Decay": d,
-                    "Before": b,
-                    "After": b * d
-                })
-            
-            df = pd.DataFrame(records).sort_values(by="Time (s)").reset_index(drop=True).round(3)
-            print('=' * 30)
-            print(f"{point.payload['vid_id']}_{point.payload['frame_id']}: t_p = {point_time:.3f}s || init_score = {point.score:.3f}")
-            print("Temporal bonus score before and after decay:")
-            print(df.to_string())
-
-
         # Initial list
         feat_query = self.encode_query(query)
         query_prefetch = self.create_prefetch(
@@ -644,12 +683,14 @@ class QueryManager:
         neighbor_counts = []
         temporal_coherence_scores = []
         visual_coherence_scores = []
+        if logging: neighbor_logs = []
         for point, neighbors in zip(points, points_neighbors):
             neighbors = [neighbor for neighbor in neighbors if neighbor.id != point.id]
             if not neighbors:
                 temporal_coherence_scores.append(0.0)
                 visual_coherence_scores.append(0.0)
                 neighbor_counts.append(1)
+                if logging: neighbor_logs.append([])
                 continue
 
             point_time_order = float(point.payload["time_order"])
@@ -657,7 +698,7 @@ class QueryManager:
             if use_time_distance:
                 delta = max(np.quantile(np.abs(neighbor_time_orders - point_time_order), 0.25), eps) # nth-quantile abs error
             else:
-                delta = 1.334 * np.median(np.abs(neighbor_time_orders - np.median(neighbor_time_orders))) * aggregation_neighbor_limit ** (-0.2)
+                delta = max(1.334 * np.median(np.abs(neighbor_time_orders - np.median(neighbor_time_orders))) * aggregation_neighbor_limit ** (-0.2), eps)
 
             temporal_decays = []
             neighbor_feats_siglip2_dense = []
@@ -690,18 +731,34 @@ class QueryManager:
             temporal_coherence_scores.append(np.dot(temporal_bonuses, np.array(temporal_decays).T))
 
             if entropy_based_bonus:
-                exp_score = np.sum(cand_sim_siglip2_dense - np.max(cand_sim_siglip2_dense))
-                softmax_score = max(exp_score / np.sum(exp_score), eps)
-                visual_coherence_scores.append(1 - (-np.sum(softmax_score * np.log(softmax_score)) / np.log(len(neighbors)))) # Information gain based on Shannon entropy
+                if len(neighbors) < 2: visual_coherence_scores.append(0.0)
+                else:
+                    exp_scores = np.exp(cand_sim_siglip2_dense - np.max(cand_sim_siglip2_dense))
+                    softmax_scores = exp_scores / max(np.sum(exp_scores), eps)
+                    entropy = -np.sum(softmax_scores * np.log(softmax_scores))
+                    visual_coherence_scores.append(1 - entropy / max(np.log(len(neighbors)), eps)) # Normalized information gain from Shannon entropy
             else:
                 visual_coherence_scores.append(np.log(1 + np.sum(cand_sim_siglip2_dense))) # Normal similarity log-sum
 
-            if logging: _log(point, neighbors, temporal_bonuses, temporal_decays)
-        if entropy_based_bonus: visual_coherence_scores = np.linalg.norm(visual_coherence_scores)
+            if logging:
+                current_point_neighbor_logs = []
+                for neighbor, sim, decay in zip(neighbors, temporal_bonuses, temporal_decays):
+                    neigh_time = float(neighbor.payload["time_order"])
+                    current_point_neighbor_logs.append({
+                        "neigh_time_order": neigh_time,
+                        "time_distance": abs(neigh_time - point_time_order),
+                        "similarity_to_q": float(sim),
+                        "temporal_decay": float(decay),
+                        "final_agg_value": float(sim * decay)
+                    })
+                neighbor_logs.append(current_point_neighbor_logs)
+
         
         # Rerank based on aggregated scores
         init_scores = np.array([point.score for point in points])
         agg_scores = (1 / np.array(neighbor_counts)) * np.array(temporal_coherence_scores) * np.array(visual_coherence_scores)
+        print(visual_coherence_scores)
+        print(agg_scores)
         init_scores = (init_scores - init_scores.min()) / max((init_scores.max() - init_scores.min()), eps)
         if agg_z_score_sigmoid_norm:
             agg_scores = (agg_scores / np.mean(agg_scores)) / np.std(agg_scores) # Z-score norm
@@ -710,4 +767,17 @@ class QueryManager:
             agg_scores = (agg_scores - agg_scores.min()) / max((agg_scores.max() - agg_scores.min()), eps) # Conventional min-max norm
         final_scores = (1 - aggregation_weight) * init_scores + aggregation_weight * agg_scores
         for point, final_score in zip(points, final_scores): point.score = float(final_score)
+
+        print(agg_scores)
+        print(final_scores)
+        if logging: self.logging(
+            query=query,
+            points=points,
+            init_scores=init_scores,
+            temporal_scores=temporal_coherence_scores,
+            visual_scores=visual_coherence_scores,
+            agg_scores=agg_scores,
+            final_scores=final_scores,
+            neighbor_logs=neighbor_logs
+        )
         return sorted(points, key=lambda x: x.score, reverse=True)

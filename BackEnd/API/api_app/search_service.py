@@ -16,16 +16,13 @@ class AdvancedQueryService:
             with_vectors=["siglip2_dense"]
         )
         if not len(image_point): return []
-        image_point = image_point[0]
+        image_feat = image_point[0].vector["siglip2_dense"]
 
         result_points = self.db.search(
             collection_name,
-            query=self.db.create_prefetch(siglip2_dense=image_point.vector["siglip2_dense"], search_limit=search_limit),
+            query=image_feat,
             search_limit=search_limit,
-            using_vectors=["siglip2_dense"]
+            using_vectors="siglip2_dense"
         )
 
         return result_points
-
-    
-    

@@ -6,7 +6,7 @@ from functools import partial
 from scipy.sparse import csr_matrix
 from pathlib import Path
 from qdrant_client import QdrantClient, models
-from models import *
+from .models import *
 from tqdm import tqdm
 
 class DataLoader:
