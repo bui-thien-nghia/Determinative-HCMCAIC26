@@ -49,6 +49,7 @@ export default function VideoModal({
   const [inputError, setInputError] = useState<string | null>(null)
   const [videoError, setVideoError] = useState(false)
   const [editingTime, setEditingTime] = useState(false)
+  const [currentFrameIdxCopied, setCurrentFrameIdxCopied] = useState(false)
   const [currentFrameCopied, setCurrentFrameCopied] = useState(false)
 
   const frameId = getResultFrameId(result)
@@ -164,7 +165,17 @@ export default function VideoModal({
     })
   }
 
-  const handleCopyCurrentFrameOrder = async () => {
+  const handleCopyCurrentFrameIdx = async () => {
+    if (currentFrameOrder == null) return
+    const frameIdxText = String(currentFrameOrder)
+    const copied = await copyText(frameIdxText)
+    if (!copied) return
+    addToast(`Copied Frame Idx: ${frameIdxText}`, 'success')
+    setCurrentFrameIdxCopied(true)
+    window.setTimeout(() => setCurrentFrameIdxCopied(false), 1200)
+  }
+
+  const handleCopyCurrentFrameRow = async () => {
     if (currentFrameOrder == null) return
     const rowText = `${normalizeSubmissionVideoId(videoId)},${currentFrameOrder}`
     const copied = await copyText(rowText)
@@ -182,10 +193,12 @@ export default function VideoModal({
     setInputError(null)
     setVideoError(false)
     setDuration(0)
+    setCurrentFrameIdxCopied(false)
     setCurrentFrameCopied(false)
   }, [isOpen, resultSeekKey, selectedTimestamp])
 
   useEffect(() => {
+    setCurrentFrameIdxCopied(false)
     setCurrentFrameCopied(false)
   }, [currentFrameOrder])
 
@@ -449,7 +462,17 @@ export default function VideoModal({
                 Current Frame Idx: {currentFrameOrderLabel}
               </span>
               <button
-                onClick={handleCopyCurrentFrameOrder}
+                onClick={handleCopyCurrentFrameIdx}
+                disabled={currentFrameOrder == null}
+                className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300 transition hover:border-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                title="Copy current Frame Idx"
+                aria-label="Copy current Frame Idx"
+              >
+                <Copy size={11} />
+                {currentFrameIdxCopied ? 'Copied' : 'Copy Idx'}
+              </button>
+              <button
+                onClick={handleCopyCurrentFrameRow}
                 disabled={currentFrameOrder == null}
                 className="inline-flex items-center gap-1 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-300 transition hover:border-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                 title="Copy video ID + current Frame Idx"

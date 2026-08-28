@@ -84,8 +84,8 @@ export default function PackageKisEditor({
                     type="text"
                     value={candidate.videoId}
                     onChange={(event) => onUpdate(candidate.id, { videoId: normalizePackageVideoId(event.target.value) })}
-                    placeholder="L22_V024"
-                    className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none focus:border-blue-500"
+                    placeholder="LXX_VXXX"
+                    className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500"
                   />
                 </label>
                 <label className="min-w-0">
@@ -97,8 +97,8 @@ export default function PackageKisEditor({
                     inputMode="numeric"
                     value={candidate.frameOrder}
                     onChange={(event) => onUpdate(candidate.id, { frameOrder: parseFrameOrderInput(event.target.value) })}
-                    placeholder="27435"
-                    className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none focus:border-blue-500"
+                    placeholder="e.g. 19071"
+                    className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500"
                   />
                 </label>
               </div>

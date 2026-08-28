@@ -833,6 +833,7 @@ export interface ParsedPasteResult {
 export interface ParsePastedCandidatesOptions {
   strictOfficialVideoId?: boolean
   expectedEventCount?: number
+  normalizeClipboardEnvelope?: boolean
 }
 
 export interface ParsedSubmissionFilename {
@@ -1079,6 +1080,40 @@ export function splitSubmissionCsvRecords(text: string): ParsedSubmissionCsvReco
   return records
 }
 
+function hasPhysicalNewline(text: string) {
+  return /[\r\n]/.test(text)
+}
+
+function looksLikeSubmissionRecord(fields: string[]) {
+  if (fields.length < 2) return false
+  const videoId = fields[0].trim()
+  const frameValue = fields[1].trim()
+  return /^L\d+_V\d+$/i.test(normalizeSubmissionVideoId(videoId)) && /^\d+$/.test(frameValue)
+}
+
+function looksLikeSubmissionText(text: string) {
+  const records = splitSubmissionCsvRecords(text)
+  if (records.length < 2) return false
+  return records.every((record) => {
+    const parsed = parseSubmissionRow(record.raw)
+    return parsed.errors.length === 0 && looksLikeSubmissionRecord(parsed.fields)
+  })
+}
+
+export function normalizeClipboardSubmissionText(text: string) {
+  if (!hasPhysicalNewline(text)) return text
+
+  const records = splitSubmissionCsvRecords(text)
+  if (records.length !== 1) return text
+
+  const parsed = parseSubmissionRow(records[0].raw)
+  if (parsed.errors.length > 0 || parsed.fields.length !== 1) return text
+
+  const innerText = parsed.fields[0]
+  if (!hasPhysicalNewline(innerText)) return text
+  return looksLikeSubmissionText(innerText) ? innerText : text
+}
+
 function parseCandidateForQuery(
   query: PackageQuery,
   fields: string[],
@@ -1167,8 +1202,11 @@ export function parsePastedCandidates(
   const pastedKeys = new Set<string>()
   const capacity = Math.max(0, MAX_SUBMISSION_ROWS - query.candidates.length)
   let eligibleCount = 0
+  const parseText = options.normalizeClipboardEnvelope
+    ? normalizeClipboardSubmissionText(text)
+    : text
 
-  const rows = splitSubmissionCsvRecords(text)
+  const rows = splitSubmissionCsvRecords(parseText)
     .map((line, rowIndex): ParsedPasteRow => {
       const parsed = parseSubmissionRow(line.raw)
       const errors = [...parsed.errors]

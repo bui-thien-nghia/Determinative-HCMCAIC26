@@ -44,7 +44,7 @@ export default function PackageQueryTable({
               query={query}
               active={teamPackage.activeQueryId === query.id}
               status={validationById.get(query.id)?.status}
-              statusTitle={validationTitle(validationById.get(query.id))}
+              validation={validationById.get(query.id)}
               onSelect={() => onSelectQuery(query.id)}
               onChangeType={(type) => onChangeType(query.id, type)}
             />
@@ -59,14 +59,14 @@ function PackageQueryRow({
   query,
   active,
   status,
-  statusTitle,
+  validation,
   onSelect,
   onChangeType,
 }: {
   query: PackageQuery
   active: boolean
   status?: PackageQueryStatus
-  statusTitle?: string
+  validation?: PackageValidationResult['queries'][number]
   onSelect: () => void
   onChangeType: (type: SubmissionQueryType) => void
 }) {
@@ -134,34 +134,72 @@ function PackageQueryRow({
         {candidateCount}
       </div>
       <div className="flex min-w-0 justify-center">
-        {status && <StatusBadge status={status} title={statusTitle} />}
+        {status && <StatusBadge status={status} validation={validation} />}
       </div>
     </div>
   )
 }
 
-function validationTitle(validation?: PackageValidationResult['queries'][number]) {
-  if (!validation) return undefined
-  if (validation.status === 'UNANSWERED') return 'No candidates yet.'
-  const issues = [...validation.errors, ...validation.warnings]
-  if (issues.length === 0) return validation.status
-  return issues.slice(0, 3).map((issue) => issue.message).join('\n')
+function tooltipMessage(message: string) {
+  if (message.toLowerCase().includes('duplicate candidate')) return 'Duplicate candidate.'
+  return message
 }
 
-function StatusBadge({ status, title }: { status: PackageQueryStatus; title?: string }) {
+function errorTooltipLines(validation?: PackageValidationResult['queries'][number]) {
+  if (!validation) return []
+  return validation.errors.slice(0, 5).map((issue) => {
+    const message = tooltipMessage(issue.message)
+    return issue.candidateIndex == null
+      ? message
+      : `Candidate ${issue.candidateIndex + 1}: ${message}`
+  })
+}
+
+function StatusBadge({
+  status,
+  validation,
+}: {
+  status: PackageQueryStatus
+  validation?: PackageValidationResult['queries'][number]
+}) {
   const label = status === 'UNANSWERED' ? 'EMPTY' : status
   const className = {
     READY: 'border-emerald-700/50 bg-emerald-950/25 text-emerald-300',
     ERROR: 'border-red-800/60 bg-red-950/30 text-red-300',
     UNANSWERED: 'border-slate-700 bg-slate-900 text-slate-400',
   }[status]
+  const tooltipLines = status === 'ERROR' ? errorTooltipLines(validation) : []
+  const remainingErrorCount = status === 'ERROR' && validation
+    ? Math.max(0, validation.errors.length - tooltipLines.length)
+    : 0
 
   return (
-    <span
-      className={`inline-flex w-full max-w-full justify-center rounded border px-0.5 py-0.5 text-[7px] font-bold uppercase leading-none tracking-normal ${className}`}
-      title={title}
-    >
-      {label}
+    <span className="group/status relative flex w-full max-w-full justify-center">
+      <span
+        className={`inline-flex w-full max-w-full justify-center rounded border px-0.5 py-0.5 text-[7px] font-bold uppercase leading-none tracking-normal ${className} ${
+          status === 'ERROR' ? 'cursor-help focus:outline-none focus:ring-1 focus:ring-red-500/60' : ''
+        }`}
+        tabIndex={status === 'ERROR' ? 0 : undefined}
+        aria-label={status === 'ERROR' && tooltipLines.length > 0 ? `Error: ${tooltipLines.join(' ')}` : undefined}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        {label}
+      </span>
+      {tooltipLines.length > 0 && (
+        <div className="pointer-events-none invisible absolute right-full top-1/2 z-[10001] mr-2 w-64 max-w-[calc(100vw-2rem)] -translate-y-1/2 rounded border border-red-800/70 bg-slate-950 px-2.5 py-2 text-left text-[10px] font-medium leading-snug text-slate-100 opacity-0 shadow-2xl transition-opacity group-hover/status:visible group-hover/status:opacity-100 group-focus-within/status:visible group-focus-within/status:opacity-100">
+          <div className="flex flex-col gap-1">
+            {tooltipLines.map((line, index) => (
+              <div key={`${line}-${index}`} className="flex gap-1.5">
+                <span className="text-red-400">•</span>
+                <span>{line}</span>
+              </div>
+            ))}
+            {remainingErrorCount > 0 && (
+              <div className="pl-3.5 text-slate-400">+{remainingErrorCount} more errors</div>
+            )}
+          </div>
+        </div>
+      )}
     </span>
   )
 }

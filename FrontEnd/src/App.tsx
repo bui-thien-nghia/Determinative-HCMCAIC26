@@ -87,7 +87,7 @@ function App() {
 
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-200 flex flex-col overflow-hidden font-sans select-none relative">
-      <div className="fixed bottom-4 right-4 z-1500 flex flex-col-reverse gap-2 pointer-events-none" style={{ maxWidth: 340 }}>
+      <div className="fixed bottom-4 left-4 z-1500 flex flex-col-reverse gap-2 pointer-events-none" style={{ maxWidth: 340 }}>
         {toasts.map(toast => (
           <div
             key={toast.id}

@@ -40,7 +40,7 @@ export default function PasteAnswersDialog({
   }, [query.id, query.type])
 
   const handleParse = () => {
-    setResult(parsePastedCandidates(query, text))
+    setResult(parsePastedCandidates(query, text, { normalizeClipboardEnvelope: true }))
   }
 
   const handleClear = () => {

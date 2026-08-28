@@ -175,8 +175,8 @@ export default function ActiveQueryEditor({
               max={MAX_TRAKE_EVENT_COUNT}
               value={query.expectedEventCount ?? ''}
               onChange={(event) => handleExpectedEventCountChange(event.target.value)}
-              placeholder="4"
-              className="h-7 w-16 rounded border border-slate-800 bg-slate-900 px-2 font-mono text-xs text-slate-100 outline-none focus:border-blue-500"
+              placeholder="e.g. 4"
+              className="h-7 w-20 rounded border border-slate-800 bg-slate-900 px-2 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500"
               aria-label="Required events for TRAKE query"
             />
           </label>

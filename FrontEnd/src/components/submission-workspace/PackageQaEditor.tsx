@@ -86,8 +86,8 @@ export default function PackageQaEditor({
                       type="text"
                       value={candidate.videoId}
                       onChange={(event) => onUpdate(candidate.id, { videoId: normalizePackageVideoId(event.target.value) })}
-                      placeholder="L21_V003"
-                      className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none focus:border-blue-500"
+                      placeholder="LXX_VXXX"
+                      className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500"
                     />
                   </label>
                   <label className="min-w-0">
@@ -99,8 +99,8 @@ export default function PackageQaEditor({
                       inputMode="numeric"
                       value={candidate.frameOrder}
                       onChange={(event) => onUpdate(candidate.id, { frameOrder: parseFrameOrderInput(event.target.value) })}
-                      placeholder="26174"
-                      className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none focus:border-blue-500"
+                      placeholder="e.g. 19071"
+                      className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500"
                     />
                   </label>
                 </div>
@@ -117,8 +117,8 @@ export default function PackageQaEditor({
                     value={candidate.answer}
                     maxLength={MAX_QA_ANSWER_LENGTH}
                     onChange={(event) => onUpdate(candidate.id, { answer: event.target.value })}
-                    placeholder="2.15"
-                    className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-blue-500"
+                    placeholder="Enter answer..."
+                    className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500"
                   />
                 </label>
               </div>
