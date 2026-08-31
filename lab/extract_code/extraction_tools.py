@@ -13,68 +13,49 @@ from tqdm import tqdm
 class KeyframeAndFeatureExtractor:
     def __init__(
         self,
-        shot_extraction_model: ExtractionModel,
         feature_extraction_model: ExtractionModel,
         save_dir="."
     ):
-        self.shot_extraction_model = shot_extraction_model
         self.feature_extraction_model = feature_extraction_model
         self.save_dir = Path(save_dir)
         self.img_dir = self.save_dir / "imgs"
         self.map_dir = self.save_dir / "maps"
         self.feat_dir = self.save_dir / "feats" / "siglip2_dense"
 
-        self.shot_extraction_model.load()
         self.feature_extraction_model.load()
 
 
     def extract_keyframes_and_features(
         self,
         vid_path,
-        confidence_threshold: float = 0.5,
+        keyframe_time_distance: float = 3,
         feature_extraction_batch_size: int = 32,
     ):
-        # imgs, maps = self.shot_extraction_model.run(vid_path, confidence_threshold)
-        # for map in maps: map["vid_path"] = vid_path
-
         imgs, maps = [], []
         cap = cv2.VideoCapture(vid_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_interval = int(round(fps)) * 3
+        frame_interval = int(round(fps * keyframe_time_distance))
 
-        # frame_order = 0
-        # frame_id = 1
-        # while True:
-        #     ret, frame = cap.read()
-        #     if not ret: break
+        frame_order = 0
+        frame_id = 1
+        while True:
+            if not frame_order % frame_interval:
+                ret, frame = cap.read()
+                if not ret: break
+                imgs.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                maps.append({
+                    "vid_path": vid_path,
+                    "frame_id": f"{frame_id:03d}",
+                    "frame_order": frame_order + 1,
+                    "time_order": frame_order / fps,
+                    "fps": fps
+                })
+                frame_id += 1
+            else:
+                ret = cap.grab()
+                if not ret: break
 
-        #     if not frame_order % frame_interval:
-        #         imgs.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        #         maps.append({
-        #             "vid_path": vid_path,
-        #             "frame_id": f"{frame_id:03d}",
-        #             "frame_order": frame_order + 1,
-        #             "time_order": frame_order / fps,
-        #             "fps": fps
-        #         })
-        #         frame_id += 1
-
-        #     frame_order += 1
-
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        for frame_id, frame_order in enumerate(range(0, total_frames, frame_interval)):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_order)
-            ret, frame = cap.read()
-            if not ret: break
-
-            imgs.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            maps.append({
-                "vid_path": vid_path,
-                "frame_id": f"{(frame_id + 1):03d}",
-                "frame_order": frame_order + 1,
-                "time_order": frame_order / fps,
-                "fps": fps
-            })
+            frame_order += 1
         
         feats = self.feature_extraction_model.run(imgs, batch_size=feature_extraction_batch_size)
         return imgs, maps, feats
@@ -160,8 +141,8 @@ class KeyframeAndFeatureExtractor:
         self,
         vid_paths: list[str],
         feature_extraction_batch_size: int = 32,
-        shot_confidence_threshold: float = 0.5,
-        clustering_similarity_threshold: float = 0.9,
+        keyframe_time_distance: float = 3,
+        clustering_similarity_threshold: float = 0.98,
         max_workers: int = 1
     ):
         self.img_dir.mkdir(parents=True, exist_ok=True)
@@ -171,8 +152,8 @@ class KeyframeAndFeatureExtractor:
         def process_single_video(path):
             imgs, maps, feats = self.extract_keyframes_and_features(
                 path,
-                confidence_threshold=shot_confidence_threshold,
-                feature_extraction_batch_size=feature_extraction_batch_size
+                feature_extraction_batch_size=feature_extraction_batch_size,
+                keyframe_time_distance=keyframe_time_distance,
             )
             unique_imgs, unique_maps, unique_feats = self.filter_with_clustering(
                 imgs, maps, feats,
