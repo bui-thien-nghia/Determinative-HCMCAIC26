@@ -195,10 +195,12 @@ class TranscriptAndFeatureProcessor:
             language: str = "",
             beam_size: int = 5,
             vad_filter: bool = True,
+            max_sentence_duration: float = 10.0
     ):
         tran_segments: list[dict] = []
         selected = []
         s, e = 0.0, 0.0
+
         tran_words = self.transcription_model.run(
             vid_path,
             batch_size=batch_size,
@@ -207,14 +209,35 @@ class TranscriptAndFeatureProcessor:
             vad_filter=vad_filter,
             word_timestamp=True
         )
+
+        # for word in tran_words:
+        #     e = word['end_time']
+        #     selected.append(word['text'])
+        #     if word['text'] and word['text'][-1] in [',', '.', '?', '!', ';']:
+        #         sentence = ' '.join(selected)
+        #         tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
+        #         selected = []
+        #         s = e
+        # if selected:
+        #     sentence = ' '.join(selected)
+        #     tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
+
+
         for word in tran_words:
+            if not selected:
+                s = word['start_time']
+
             e = word['end_time']
             selected.append(word['text'])
-            if word['text'] and word['text'][-1] in [',', '.', '?', '!', ';']:
+
+            is_punctuation = word['text'][-1] in [',', '.', '?', '!', ';']
+            is_too_long = (e - s) >= max_sentence_duration
+
+            if is_punctuation or is_too_long:
                 sentence = ' '.join(selected)
                 tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
                 selected = []
-                s = e
+
         if selected:
             sentence = ' '.join(selected)
             tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
@@ -244,8 +267,8 @@ class TranscriptAndFeatureProcessor:
 
                 selected = [
                     sentence['text'] for sentence in tran_segments
-                    if sentence['start_time'] >= lower_bound
-                    and sentence['end_time'] <= upper_bound
+                    if sentence['start_time'] <= upper_bound
+                    and sentence['end_time'] >= lower_bound
                 ]
                 tran_map[(vid_id, frame_id)] = ' '.join(selected)
 
