@@ -3,6 +3,8 @@ import json
 import cv2
 import numpy as np
 import pandas as pd
+import subprocess
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from sklearn.cluster import AgglomerativeClustering
@@ -25,12 +27,58 @@ class KeyframeAndFeatureExtractor:
         self.feature_extraction_model.load()
 
 
-    def extract_keyframes_and_features(
+    def extract_keyframes_ffmpeg(
         self,
-        vid_path,
-        keyframe_time_distance: float = 3,
-        feature_extraction_batch_size: int = 32,
+        vid_path: str,
+        shot_confidence_score: float = 0.1,
+        min_keyframe_distance: float = 2
     ):
+        select_str = f"select='isnan(prev_selected_t)+gt(scene,{shot_confidence_score})*gte(t-prev_selected_t,{min_keyframe_distance})',showinfo"
+        cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-threads", "4",
+                "-i", vid_path,
+                "-v", "info",
+                "-skip_frame", "nokey",
+                "-vf", select_str,
+                "-vsync", "vfr",
+                "-f", "rawvideo",
+                "-pix_fmt", "rgb24",
+                "-",
+            ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        if result.returncode:
+            print(f"Error: {stderr}")
+            return [], []
+
+        stream_match = re.search(r"Stream #.* Video:.*", stderr)
+        if not stream_match: return [], []  
+        stream_line = stream_match.group(0)
+        fps_match = re.search(r"([\d\.]+)\s+fps", stream_line) or re.search(r"([\d\.]+)\s+tbr", stream_line)
+        res_match = re.search(r"(\d{2,5})x(\d{2,5})", stream_line)
+
+        fps = float(fps_match.group(1)) if fps_match else 0.0
+        width = int(res_match.group(1)) if res_match else None
+        height = int(res_match.group(2)) if res_match else None
+        time_orders = [float(t) for t in re.findall(r"pts_time:\s*([\d\.]+)", stderr)]
+        frame_orders = [time_order * fps for time_order in time_orders]
+        maps = [{
+            "vid_path": vid_path,
+            "frame_id": f"{(frame_id + 1):03d}",
+            "frame_order": frame_order,
+            "time_order": time_order,
+            "fps": fps,
+        } for frame_id, (frame_order, time_order) in enumerate(zip(frame_orders, time_orders))]
+
+        raw_frames = np.frombuffer(result.stdout, dtype=np.uint8)
+        imgs = raw_frames.reshape(-1, height, width, 3)
+
+        return imgs, maps
+
+
+    def extract_keyframes_cv2(self, vid_path: str, keyframe_time_distance: float = 3):
         imgs, maps = [], []
         cap = cv2.VideoCapture(vid_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -56,6 +104,21 @@ class KeyframeAndFeatureExtractor:
                 if not ret: break
 
             frame_order += 1
+
+        return imgs, maps
+
+    def extract_keyframes_and_features(
+        self,
+        vid_path: str,
+        shot_confidence_score: float = 0.1,
+        min_keyframe_distance: float = 2,
+        feature_extraction_batch_size: int = 32,
+    ):
+        imgs, maps = self.extract_keyframes_ffmpeg(
+            vid_path, 
+            shot_confidence_score=shot_confidence_score,
+            min_keyframe_distance=min_keyframe_distance
+        )
         
         feats = self.feature_extraction_model.run(imgs, batch_size=feature_extraction_batch_size)
         return imgs, maps, feats
@@ -141,7 +204,8 @@ class KeyframeAndFeatureExtractor:
         self,
         vid_paths: list[str],
         feature_extraction_batch_size: int = 32,
-        keyframe_time_distance: float = 3,
+        shot_confidence_score: float = 0.1,
+        min_keyframe_distance: float = 2,
         clustering_similarity_threshold: float = 0.98,
         max_workers: int = 1
     ):
@@ -152,8 +216,9 @@ class KeyframeAndFeatureExtractor:
         def process_single_video(path):
             imgs, maps, feats = self.extract_keyframes_and_features(
                 path,
+                shot_confidence_score=shot_confidence_score,
+                min_keyframe_distance=min_keyframe_distance,
                 feature_extraction_batch_size=feature_extraction_batch_size,
-                keyframe_time_distance=keyframe_time_distance,
             )
             unique_imgs, unique_maps, unique_feats = self.filter_with_clustering(
                 imgs, maps, feats,
