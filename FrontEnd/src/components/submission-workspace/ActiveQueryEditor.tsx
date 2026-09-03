@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ClipboardPaste, Plus } from 'lucide-react'
+import type { SearchResult } from '../../store'
 import {
   MAX_TRAKE_EVENT_COUNT,
   filenameForPackageQuery,
@@ -15,11 +16,13 @@ import PackageKisEditor from './PackageKisEditor'
 import PackageQaEditor from './PackageQaEditor'
 import PackageTrakeEditor from './PackageTrakeEditor'
 import PasteAnswersDialog from './PasteAnswersDialog'
+import SpawnRangeDialog from './SpawnRangeDialog'
 import type { CandidateMoveDirection } from './candidateEditorUtils'
 
 type ActiveQueryEditorProps = {
   query: PackageQuery | null
   filenameTemplate: string
+  searchResults: SearchResult[]
   onAddCandidate: (queryId: string, candidate: QueryCandidate) => void
   onUpdateCandidate: (queryId: string, candidateId: string, patch: QueryCandidatePatch) => void
   onRemoveCandidate: (queryId: string, candidateId: string) => void
@@ -45,6 +48,7 @@ function candidateIndex(query: PackageQuery, candidateId: string) {
 export default function ActiveQueryEditor({
   query,
   filenameTemplate,
+  searchResults,
   onAddCandidate,
   onUpdateCandidate,
   onRemoveCandidate,
@@ -54,9 +58,11 @@ export default function ActiveQueryEditor({
   onNotify,
 }: ActiveQueryEditorProps) {
   const [pasteOpen, setPasteOpen] = useState(false)
+  const [spawnOpen, setSpawnOpen] = useState(false)
 
   useEffect(() => {
     setPasteOpen(false)
+    setSpawnOpen(false)
   }, [query?.id, query?.type])
 
   if (!query) {
@@ -159,6 +165,16 @@ export default function ActiveQueryEditor({
             <Plus size={12} />
             Add Row
           </button>
+          {query.type !== 'TRAKE' && (
+            <button
+              type="button"
+              onClick={() => setSpawnOpen(true)}
+              className="flex shrink-0 items-center justify-center gap-1.5 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-300 transition-colors hover:border-blue-500/60 hover:bg-blue-950/30 hover:text-blue-200"
+            >
+              <Plus size={12} />
+              Spawn Range
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setPasteOpen(true)}
@@ -217,6 +233,17 @@ export default function ActiveQueryEditor({
           query={query}
           filenameTemplate={filenameTemplate}
           onClose={() => setPasteOpen(false)}
+          onApply={onAddCandidates}
+          onNotify={onNotify}
+        />
+      )}
+
+      {spawnOpen && query.type !== 'TRAKE' && (
+        <SpawnRangeDialog
+          query={query}
+          filenameTemplate={filenameTemplate}
+          searchResults={searchResults}
+          onClose={() => setSpawnOpen(false)}
           onApply={onAddCandidates}
           onNotify={onNotify}
         />

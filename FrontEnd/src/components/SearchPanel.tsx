@@ -5,7 +5,9 @@ import {
   describeSearchQuery,
   getRangeFilterValidationError,
   getSearchResultFilterSummary,
+  MAX_TOP_K,
   useStore,
+  validateTopKInput,
 } from '../store'
 import { api } from '../api'
 import type { SearchModality } from '../api'
@@ -70,6 +72,8 @@ function datasetStatusClass(status: string | null) {
 export default function SearchPanel() {
   const [query, setQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(true)
+  const [topKInput, setTopKInput] = useState('100')
+  const [topKInteracted, setTopKInteracted] = useState(false)
   const searchRequestIdRef = useRef(0)
 	  const {
 		    currentDataset, setDataset,
@@ -113,6 +117,10 @@ export default function SearchPanel() {
   useEffect(() => {
     loadDatasetConfig()
   }, [loadDatasetConfig])
+
+  useEffect(() => {
+    setTopKInput(String(topK))
+  }, [topK])
 
   const indexedFields = useMemo(() => (
     Object.entries(collectionSchema)
@@ -165,6 +173,9 @@ export default function SearchPanel() {
     () => buildSearchFilterRequest(filterValues, collectionSchema),
     [collectionSchema, filterValues],
   )
+  const topKValidation = useMemo(() => validateTopKInput(topKInput), [topKInput])
+  const topKError = topKValidation.valid ? null : topKValidation.error
+  const showTopKError = topKInteracted && Boolean(topKError)
   const frameIdRangeError = getRangeFilterValidationError(filterValues, 'frame_id')
   const frameOrderRangeError = getRangeFilterValidationError(filterValues, 'frame_order')
   const timeOrderRangeError = getRangeFilterValidationError(filterValues, 'time_order')
@@ -173,11 +184,45 @@ export default function SearchPanel() {
     currentDataset
       && !isLoading
       && searchFilterRequest.errors.length === 0
+      && topKValidation.valid
       && (queryToSearch || searchFilterRequest.hasBackendFilters),
   )
 
+  const commitTopKInput = (input: string) => {
+    const validation = validateTopKInput(input)
+    if (validation.valid) {
+      setTopK(validation.value)
+    }
+    return validation.valid
+  }
+
+  const handleTopKInputChange = (value: string) => {
+    setTopKInput(value)
+    setTopKInteracted(true)
+
+    const validation = validateTopKInput(value)
+    if (validation.valid) {
+      setTopK(validation.value)
+    }
+  }
+
+  const handleTopKIncrement = (amount: number) => {
+    const nextTopK = Math.min(MAX_TOP_K, topK + amount)
+    setTopK(nextTopK)
+    setTopKInput(String(nextTopK))
+    setTopKInteracted(false)
+  }
+
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
+
+    if (!topKValidation.valid) {
+      setTopKInteracted(true)
+      const msg = topKValidation.error
+      setError(msg)
+      addToast(msg, 'error')
+      return
+    }
 
     if (searchFilterRequest.errors.length > 0) {
       const msg = searchFilterRequest.errors.join(' ')
@@ -202,7 +247,7 @@ export default function SearchPanel() {
 
 	    const collection = currentDataset
 	    const modelId = currentModel || 'siglip2'
-    const safeTopK = Math.min(100, Math.max(1, Number(topK) || 100))
+    const safeTopK = topKValidation.value
 
     const requestId = searchRequestIdRef.current + 1
     searchRequestIdRef.current = requestId
@@ -274,6 +319,8 @@ export default function SearchPanel() {
     setMode(h.mode)
     if (h.searchModality) setSearchModality(h.searchModality)
     setTopK(h.top_k)
+    setTopKInput(String(h.top_k))
+    setTopKInteracted(false)
     const restoredCollection = h.collection && availableCollections.includes(h.collection)
       ? h.collection
       : availableCollections[0]
@@ -410,30 +457,52 @@ export default function SearchPanel() {
         </div>
 
         <div>
-          <label className="text-[10px] font-semibold text-slate-500 mb-1 flex justify-between uppercase tracking-wider">
+          <label htmlFor="top-k-input" className="text-[10px] font-semibold text-slate-500 mb-1 flex justify-between uppercase tracking-wider">
             <span>Top K</span>
             <span className="text-slate-400">{topK}</span>
           </label>
-          <div className="flex gap-2 items-center">
-            <input
-              type="number"
-              min="1"
-              max="100"
-              value={topK}
-              onChange={(e) => setTopK(parseInt(e.target.value, 10) || 100)}
-              className="w-20 bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500"
-            />
-            <div className="flex gap-1 flex-1">
-              {[5, 10, 20, 50, 100].map(k => (
-                <button
-                  key={k}
-                  onClick={() => setTopK(k)}
-                  className={`flex-1 text-[10px] py-1 rounded transition-colors border ${topK === k ? 'bg-blue-600/20 text-blue-400 border-blue-500/50' : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-600'}`}
-                >
-                  {k}
-                </button>
-              ))}
+          <input
+            id="top-k-input"
+            type="text"
+            inputMode="numeric"
+            value={topKInput}
+            onChange={(event) => handleTopKInputChange(event.target.value)}
+            onBlur={() => {
+              setTopKInteracted(true)
+              commitTopKInput(topKInput)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                setTopKInteracted(true)
+                commitTopKInput(topKInput)
+              }
+            }}
+            aria-invalid={showTopKError}
+            aria-describedby={showTopKError ? 'top-k-error' : undefined}
+            className={`w-full bg-slate-950 border rounded px-2 py-1.5 text-slate-200 outline-none focus:border-blue-500 ${
+              showTopKError ? 'border-red-700/70' : 'border-slate-800'
+            }`}
+          />
+          {showTopKError && (
+            <div id="top-k-error" className="mt-1 text-[10px] text-red-400">
+              {topKError}
             </div>
+          )}
+          <div className="mt-2 grid grid-cols-5 gap-1">
+            {[5, 10, 20, 50, 100].map((amount) => (
+              <button
+                key={amount}
+                type="button"
+                onClick={() => handleTopKIncrement(amount)}
+                disabled={topK >= MAX_TOP_K}
+                aria-label={`Increase Top K by ${amount}`}
+                title={`Add ${amount} to Top K`}
+                className="min-w-0 rounded border border-slate-800 bg-slate-950 px-1 py-1 text-[10px] font-semibold text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-slate-800 disabled:hover:text-slate-400"
+              >
+                +{amount}
+              </button>
+            ))}
           </div>
         </div>
 

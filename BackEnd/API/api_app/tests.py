@@ -52,6 +52,10 @@ class TeamRoomApiTests(TestCase):
     def test_create_sanitizes_local_active_query_and_poll_is_revision_based(self):
         room = TeamRoom.objects.get(code=self.code)
         self.assertNotIn('activeQueryId', room.package_json)
+        detail = getTeamRoom(self.factory.get(f'/api/team-room/{self.code}/'), self.code)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data['roomCode'], self.code)
+        self.assertEqual(detail.data['package']['queryCount'], 2)
         response = getTeamRoom(self.factory.get(
             f'/api/team-room/{self.code}/',
             {'since_revision': room.revision},
@@ -59,6 +63,11 @@ class TeamRoomApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.data['changed'])
         self.assertNotIn('package', response.data)
+
+    def test_room_not_found_returns_404(self):
+        response = getTeamRoom(self.factory.get('/api/team-room/AIC-2222222/'), 'AIC-2222222')
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data['code'], 'ROOM_NOT_FOUND')
 
     def test_create_accepts_50_query_package_and_rejects_51(self):
         accepted = createTeamRoom(self.factory.post(
@@ -134,6 +143,18 @@ class TeamRoomApiTests(TestCase):
         ), self.code)
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.data['code'], 'CONFIG_CONFLICT')
+
+    def test_config_update_applies_package_setup(self):
+        next_package = package(3)
+        response = updateTeamRoomConfig(self.factory.patch(
+            f'/api/team-room/{self.code}/config/',
+            {'baseRevision': 1, 'baseConfigRevision': 1, 'package': next_package},
+            format='json',
+        ), self.code)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['package']['queryCount'], 3)
+        self.assertEqual(response.data['configRevision'], 2)
+        self.assertEqual(response.data['revision'], 2)
 
     def test_heartbeat_updates_presence_without_changing_submission_revision(self):
         before = TeamRoom.objects.get(code=self.code).revision

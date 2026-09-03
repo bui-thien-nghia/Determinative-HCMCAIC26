@@ -300,6 +300,7 @@ export default function RecheckPanel() {
       <ActiveQueryEditor
         query={activePackageQuery}
         filenameTemplate={teamSubmissionPackage.filenameTemplate}
+        searchResults={searchResults}
         onAddCandidate={addPackageQueryCandidate}
         onAddCandidates={addPackageQueryCandidates}
         onUpdateCandidate={updatePackageQueryCandidate}

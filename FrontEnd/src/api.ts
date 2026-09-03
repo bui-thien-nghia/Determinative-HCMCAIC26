@@ -90,6 +90,7 @@ type DatasetOption = {
 }
 
 const ACTIVE_COLLECTION = 'aic2026_v2'
+const TEAM_ROOM_API_PREFIX = '/__team_room_api__'
 
 export function getSearchModalityRequestFields(_modality: SearchModality): Record<string, never> {
   // BACKEND_INTEGRATION_SEARCH_MODALITY: when the backend supports search modality,
@@ -100,8 +101,13 @@ export function getSearchModalityRequestFields(_modality: SearchModality): Recor
 async function readTeamRoomJson<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => undefined) as (Record<string, unknown> & { message?: string; error?: string }) | undefined
   if (!response.ok) {
+    const message = response.status === 404
+      ? 'Room not found.'
+      : response.status >= 500
+        ? 'Shared Room server returned an unexpected error.'
+        : data?.message || data?.error || `HTTP error! status: ${response.status}`
     throw new TeamRoomRequestError(
-      data?.message || data?.error || `HTTP error! status: ${response.status}`,
+      message,
       response.status,
       data,
     )
@@ -116,6 +122,22 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error(data?.error || `HTTP error! status: ${response.status}`)
   }
   return response.json() as Promise<T>
+}
+
+function teamRoomApiPath(path: string) {
+  return `${TEAM_ROOM_API_PREFIX}${path}`
+}
+
+async function fetchTeamRoom(path: string, init?: RequestInit) {
+  try {
+    return await fetch(teamRoomApiPath(path), init)
+  } catch (error) {
+    throw new TeamRoomRequestError(
+      'Could not reach Shared Room server.',
+      0,
+      { error: error instanceof Error ? error.message : String(error) },
+    )
+  }
 }
 
 export const api = {
@@ -321,7 +343,7 @@ export const api = {
 
   createTeamRoom: async (displayName: string, teamPackage: TeamSubmissionPackage): Promise<TeamRoomSnapshot> => {
     const { activeQueryId: _localActiveQueryId, ...sharedPackage } = teamPackage
-    const response = await fetch('/api/team-room/create/', {
+    const response = await fetchTeamRoom('/api/team-room/create/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ displayName, package: sharedPackage }),
@@ -331,7 +353,7 @@ export const api = {
 
   getTeamRoom: async (roomCode: string, sinceRevision?: number): Promise<TeamRoomSnapshot> => {
     const suffix = sinceRevision == null ? '' : `?since_revision=${encodeURIComponent(sinceRevision)}`
-    const response = await fetch(`/api/team-room/${encodeURIComponent(roomCode)}/${suffix}`, { method: 'GET' })
+    const response = await fetchTeamRoom(`/api/team-room/${encodeURIComponent(roomCode)}/${suffix}`, { method: 'GET' })
     return readTeamRoomJson<TeamRoomSnapshot>(response)
   },
 
@@ -341,7 +363,7 @@ export const api = {
     baseQueryRevision: number,
     query: PackageQuery,
   ): Promise<{ ok: true; revision: number; queryRevision: number; query: PackageQuery }> => {
-    const response = await fetch(`/api/team-room/${encodeURIComponent(roomCode)}/query/${queryNumber}/`, {
+    const response = await fetchTeamRoom(`/api/team-room/${encodeURIComponent(roomCode)}/query/${queryNumber}/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ baseQueryRevision, query }),
@@ -356,7 +378,7 @@ export const api = {
     teamPackage: TeamSubmissionPackage,
   ): Promise<TeamRoomSnapshot & { ok: true }> => {
     const { activeQueryId: _localActiveQueryId, ...sharedPackage } = teamPackage
-    const response = await fetch(`/api/team-room/${encodeURIComponent(roomCode)}/config/`, {
+    const response = await fetchTeamRoom(`/api/team-room/${encodeURIComponent(roomCode)}/config/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ baseRevision, baseConfigRevision, package: sharedPackage }),
@@ -370,7 +392,7 @@ export const api = {
     displayName: string,
     activeQueryNumber: number | null,
   ): Promise<{ ok: true; members: TeamRoomMember[] }> => {
-    const response = await fetch(`/api/team-room/${encodeURIComponent(roomCode)}/heartbeat/`, {
+    const response = await fetchTeamRoom(`/api/team-room/${encodeURIComponent(roomCode)}/heartbeat/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientId, displayName, activeQueryNumber }),

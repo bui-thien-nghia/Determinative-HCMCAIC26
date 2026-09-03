@@ -8,16 +8,30 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .serializers import SearchRequest
 
-from BackEnd.src.db_management_tools import QueryManager
-from BackEnd.src.models import SigLIP2Model, BGEM3Model
-from .search_service import AdvancedQueryService
+query_manager = None
+advanced_query_service = None
 
-query_manager = QueryManager(
-    SigLIP2Model(name="google/siglip2-so400m-patch14-384", device="cpu"),
-    BGEM3Model(name="BAAI/bge-m3", device="cpu")
-)
 
-advanced_query_service = AdvancedQueryService(query_manager)
+def get_query_manager():
+    global query_manager
+    if query_manager is None:
+        from BackEnd.src.db_management_tools import QueryManager
+        from BackEnd.src.models import BGEM3Model, SigLIP2Model
+
+        query_manager = QueryManager(
+            SigLIP2Model(name="google/siglip2-so400m-patch14-384", device="cpu"),
+            BGEM3Model(name="BAAI/bge-m3", device="cpu")
+        )
+    return query_manager
+
+
+def get_advanced_query_service():
+    global advanced_query_service
+    if advanced_query_service is None:
+        from .search_service import AdvancedQueryService
+
+        advanced_query_service = AdvancedQueryService(get_query_manager())
+    return advanced_query_service
 
 def formatResult(points: any):
     formatted_results = []
@@ -65,7 +79,7 @@ def Search(request):
             return Response({'error': 'Enter a query or use /api/filter/ for filter-only search.'}, status=400)
 
         try:
-            points = advanced_query_service.search(
+            points = get_advanced_query_service().search(
                 collection_name=collection,
                 query=query,
                 search_limit=top_k,
@@ -96,7 +110,7 @@ def AggregatedSearch(request):
             return Response({'error': 'Enter a query or use /api/filter/ for filter-only search.'}, status=400)
 
         try:
-            points = advanced_query_service.aggregated_search(
+            points = get_advanced_query_service().aggregated_search(
                 collection_name=collection,
                 query=query,
                 search_limit=top_k,
@@ -114,7 +128,7 @@ def AggregatedSearch(request):
 @api_view(['GET'])
 def getCollections(request):
     try:
-        collections = query_manager.list_collections()
+        collections = get_query_manager().list_collections()
     except Exception as e:
         return Response({'error': str(e)}, status = 500)
 
@@ -128,7 +142,7 @@ def describeSchema(request):
         return Response({'error': 'Missing parameter'}, status=400)
     
     try:
-        schema_descriptor = query_manager.describe_schema(collection_name)
+        schema_descriptor = get_query_manager().describe_schema(collection_name)
     except Exception as e:
         return Response({'error': str(e)}, status=500)
 
@@ -159,7 +173,7 @@ def continuousSearch(request):
         return Response({'error': 'Missing parameter'}, status=400)
 
     try:
-        points = advanced_query_service.search_on_image(
+        points = get_advanced_query_service().search_on_image(
             collection_name = collection,
             vid_id = video_id,
             frame_id = frame_id, 
@@ -181,7 +195,7 @@ def doFilter(request):
         return Response({'error': 'Missing parameter'}, status = 400)
 
     try:
-        points = advanced_query_service.do_filter(
+        points = get_advanced_query_service().do_filter(
             collection_name = collection_name,
             filters = filters,
             key = key,

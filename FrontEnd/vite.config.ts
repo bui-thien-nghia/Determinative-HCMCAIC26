@@ -1,4 +1,4 @@
-import { defineConfig, type ViteDevServer } from 'vite'
+import { defineConfig, loadEnv, type ViteDevServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { execFile } from 'node:child_process'
@@ -19,6 +19,7 @@ const neighborsPrefix = '/__aic_neighbors__/'
 const configPath = '/__aic_config__'
 const configDatasetRootPath = '/__aic_config__/dataset-root'
 const configChooseDatasetRootPath = '/__aic_config__/choose-dataset-root'
+const teamRoomApiPrefix = '/__team_room_api__'
 const safeIdPattern = /^[A-Za-z0-9_-]+$/
 const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
 const videoExtensions = new Set(['.mp4', '.webm', '.mov', '.mkv'])
@@ -726,15 +727,25 @@ function aicMediaPlugin() {
   }
 }
 
-export default defineConfig({
-  plugins: [react(), tailwindcss(), aicMediaPlugin()],
-  server: {
-    host: '0.0.0.0',
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      }
-    }
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, __dirname, '')
+  const teamRoomBackendUrl = env.VITE_TEAM_ROOM_BACKEND_URL?.trim() || 'http://localhost:8000'
+
+  return {
+    plugins: [react(), tailwindcss(), aicMediaPlugin()],
+    server: {
+      host: '0.0.0.0',
+      proxy: {
+        [teamRoomApiPrefix]: {
+          target: teamRoomBackendUrl,
+          changeOrigin: true,
+          rewrite: (requestPath) => requestPath.replace(new RegExp(`^${teamRoomApiPrefix}`), ''),
+        },
+        '/api': {
+          target: 'http://localhost:8000',
+          changeOrigin: true,
+        },
+      },
+    },
   }
 })

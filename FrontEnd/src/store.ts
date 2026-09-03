@@ -72,6 +72,36 @@ export type CollectionSchema = Record<string, SchemaField>
 export type FilterValues = Record<string, string>
 export type MetadataVisibility = Record<string, boolean>
 
+export const MIN_TOP_K = 1
+export const MAX_TOP_K = 500
+
+export type TopKValidationResult =
+  | { valid: true; value: number }
+  | { valid: false; error: string }
+
+export function validateTopKInput(input: string): TopKValidationResult {
+  const value = input.trim()
+
+  if (!value) {
+    return { valid: false, error: 'Enter a Top K value.' }
+  }
+
+  if (/^[+-]?(?:\d+\.\d*|\d*\.\d+)$/.test(value)) {
+    return { valid: false, error: `Top K must be a whole number between ${MIN_TOP_K} and ${MAX_TOP_K}.` }
+  }
+
+  if (!/^[+-]?\d+$/.test(value)) {
+    return { valid: false, error: 'Enter a valid whole number.' }
+  }
+
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < MIN_TOP_K || parsed > MAX_TOP_K) {
+    return { valid: false, error: `Top K must be between ${MIN_TOP_K} and ${MAX_TOP_K}.` }
+  }
+
+  return { valid: true, value: parsed }
+}
+
 export interface RecheckItem {
   id: string
   img_link: string
@@ -1378,7 +1408,12 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setColumns: (cols) => set({ columns: cols }),
-  setTopK: (k) => set({ topK: k }),
+  setTopK: (k) => {
+    const validation = validateTopKInput(String(k))
+    if (validation.valid) {
+      set({ topK: validation.value })
+    }
+  },
   setLanguage: (lang) => set({ language: lang }),
   setMode: (mode) => set({ mode }),
   setLastSearch: (lastSearch) => set({ lastSearch }),
