@@ -336,10 +336,33 @@ class QueryManager:
 
 
     def create_filter(self, key: str, value):
+        if isinstance(value, dict):
+            if "match_text" in value:
+                return models.FieldCondition(
+                    key=key,
+                    match=models.MatchText(text=value["match_text"])
+                )
+            if "any" in value:
+                return models.FieldCondition(
+                    key=key,
+                    match=models.MatchAny(any=value["any"])
+                )
+            if "range" in value:
+                range_value = value["range"]
+                return models.FieldCondition(
+                    key=key,
+                    range=models.Range(
+                        gte=range_value.get("gte"),
+                        lte=range_value.get("lte")
+                    )
+                )
         if isinstance(value, (tuple, list)):
             return models.FieldCondition(
                 key=key,
-                range=models.Range(gte=value[0], lte=value[1])
+                range=models.Range(
+                    gte=value[0] if len(value) > 0 else None,
+                    lte=value[1] if len(value) > 1 else None
+                )
             )
         return models.FieldCondition(
             key=key,
@@ -348,7 +371,14 @@ class QueryManager:
 
 
     def create_filters(self, **kwargs):
-        return [self.create_filter(key, value) for key, value in kwargs.items() if value]
+        def has_value(value):
+            if value is None: return False
+            if isinstance(value, str): return bool(value.strip())
+            if isinstance(value, (tuple, list)): return any(item is not None and item != "" for item in value)
+            if isinstance(value, dict): return bool(value)
+            return True
+
+        return [self.create_filter(key, value) for key, value in kwargs.items() if has_value(value)]
 
 
     def get_points(
@@ -356,6 +386,7 @@ class QueryManager:
         collection_name: str,
         filters: list[models.Condition] = [],
         pagination_limit: int = 1000,
+        max_results: int | None = None,
         with_payload: bool | list[str] = True,
         with_vectors: bool | list[str] = False
     ):
@@ -363,11 +394,17 @@ class QueryManager:
         points = []
 
         while True:
+            limit = pagination_limit
+            if max_results is not None:
+                remaining = max_results - len(points)
+                if remaining <= 0: break
+                limit = min(limit, remaining)
+
             records, offset = self.database_client.scroll(
                 collection_name,
                 scroll_filter=models.Filter(must=filters),
                 offset=offset,
-                limit=pagination_limit,
+                limit=limit,
                 with_payload=with_payload,
                 with_vectors=with_vectors
             )
@@ -465,6 +502,7 @@ class QueryManager:
         collection_name: str,
         query: str,
         search_limit: int = 100,
+        filter: list[models.Condition] = [],
         aggregation_neighbor_limit: int = 10,
         aggregation_weight: float = 0.5,
         temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2],
@@ -488,7 +526,8 @@ class QueryManager:
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             search_limit=search_limit,
             return_vectors=["siglip2_dense", "beit3_dense", "bgem3_dense", "bgem3_sparse"],
-            return_payloads=True
+            return_payloads=True,
+            filter=filter
         )
 
         # Batch ANN search
@@ -550,6 +589,7 @@ class QueryManager:
         collection_name: str,
         query: str,
         search_limit: int = 100,
+        filter: list[models.Condition] = [],
 
         # ANN method variables
         aggregation_weight: float = 0.5,
@@ -606,7 +646,8 @@ class QueryManager:
             query=models.FusionQuery(fusion=models.Fusion.DBSF),
             search_limit=search_limit,
             return_vectors=["siglip2_dense", "bgem3_dense", "bgem3_sparse"],
-            return_payloads=True
+            return_payloads=True,
+            filter=filter
         )
 
         # Batch ANN search

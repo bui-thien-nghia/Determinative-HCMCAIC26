@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, ChevronLeft, ChevronRight, Plus, Image as ImageIcon, Map, MessageSquare, Database, FileVideo, Copy, Loader2 } from 'lucide-react'
-import { getFilteredSearchResults, useStore, type SearchResult } from '../store'
+import { useStore, type SearchResult } from '../store'
 import { getImageUrl, getNeighborKeyframes, type NeighborFrame } from '../utils/media'
 import { captureVideoFrame, type CapturedVideoFrame } from '../utils/videoFrameCapture'
 import {
@@ -44,7 +44,6 @@ export default function PreviewModal() {
     previewResult,
     setPreviewResult,
 	    searchResults,
-	    filterValues,
     setPlayingVideo,
     addToast,
     addResultToActivePackageQuery,
@@ -68,8 +67,8 @@ export default function PreviewModal() {
   const lastCopyFeedbackRef = useRef<{ label: string; time: number }>({ label: '', time: 0 })
 
   const previewResults = useMemo(
-    () => getFilteredSearchResults(searchResults, filterValues),
-    [filterValues, searchResults],
+    () => searchResults,
+    [searchResults],
   )
   const currentIndex = previewResults.findIndex(r => r.id === previewResult?.id)
   const videoId = getResultVideoId(previewResult)

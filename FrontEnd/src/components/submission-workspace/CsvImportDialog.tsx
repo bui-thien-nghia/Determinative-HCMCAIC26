@@ -1,9 +1,9 @@
 import { useRef, useState } from 'react'
 import { FileUp, RotateCcw, X } from 'lucide-react'
 import {
-  DEFAULT_TEAM_QUERY_COUNT,
   MAX_SUBMISSION_ROWS,
   filenameForPackageQuery,
+  getPackageQueryByNumber,
   parsePastedCandidates,
   parseSubmissionFilename,
   splitSubmissionCsvRecords,
@@ -11,11 +11,13 @@ import {
   type ParsedPasteResult,
   type ParsedSubmissionFilename,
   type QueryCandidate,
+  type TeamSubmissionPackage,
 } from '../../utils/submission'
 import CandidateImportReview from './CandidateImportReview'
 
 type CsvImportDialogProps = {
   activeQuery: PackageQuery
+  teamPackage: TeamSubmissionPackage
   onClose: () => void
   onApply: (queryId: string, candidates: QueryCandidate[]) => number
   onNotify: (message: string, type?: 'success' | 'error' | 'info') => void
@@ -37,17 +39,20 @@ function displayType(type?: PackageQuery['type']) {
   return type === 'QA' ? 'Q&A' : type
 }
 
-function queryName(query: Pick<PackageQuery, 'queryNumber' | 'type'>) {
-  return filenameForPackageQuery(query).replace(/\.csv$/i, '')
-}
-
 function nonEmptyLineCount(text: string) {
   return splitSubmissionCsvRecords(text).length
 }
 
-function buildParseQuery(activeQuery: PackageQuery, metadata: ParsedSubmissionFilename, activeMatches: boolean): PackageQuery | undefined {
+function buildParseQuery(
+  activeQuery: PackageQuery,
+  teamPackage: TeamSubmissionPackage,
+  metadata: ParsedSubmissionFilename,
+  activeMatches: boolean,
+): PackageQuery | undefined {
   if (!metadata.queryNumber || !metadata.type) return undefined
   if (activeMatches) return activeQuery
+  const configuredQuery = getPackageQueryByNumber(teamPackage, metadata.queryNumber)
+  if (configuredQuery) return configuredQuery
   return {
     id: `csv-review-query-${metadata.queryNumber}`,
     queryNumber: metadata.queryNumber,
@@ -61,6 +66,7 @@ function buildParseQuery(activeQuery: PackageQuery, metadata: ParsedSubmissionFi
 
 export default function CsvImportDialog({
   activeQuery,
+  teamPackage,
   onClose,
   onApply,
   onNotify,
@@ -68,7 +74,7 @@ export default function CsvImportDialog({
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [review, setReview] = useState<CsvReviewState | null>(null)
   const [loading, setLoading] = useState(false)
-  const activeQueryName = queryName(activeQuery)
+  const activeQueryName = filenameForPackageQuery(activeQuery, teamPackage.filenameTemplate).replace(/\.csv$/i, '')
   const eligibleCount = review?.result?.eligibleCandidates.length ?? 0
   const rowCount = review?.result?.rows.length ?? 0
   const errorCount = (review?.result?.rows.filter((row) => row.status === 'ERROR').length ?? 0) + (review?.fileErrors.length ?? 0)
@@ -83,7 +89,7 @@ export default function CsvImportDialog({
     || review.fileErrors.length > 0
     || eligibleCount === 0
   const detectedName = review?.metadata.queryNumber && review.metadata.type
-    ? `query-${review.metadata.queryNumber}-${review.metadata.type === 'QA' ? 'qa' : review.metadata.type.toLowerCase()}`
+    ? filenameForPackageQuery({ queryNumber: review.metadata.queryNumber, type: review.metadata.type }, teamPackage.filenameTemplate).replace(/\.csv$/i, '')
     : '--'
 
   const chooseFile = () => {
@@ -102,7 +108,7 @@ export default function CsvImportDialog({
 
     try {
       const text = await file.text()
-      const metadata = parseSubmissionFilename(file.name, DEFAULT_TEAM_QUERY_COUNT)
+      const metadata = parseSubmissionFilename(file.name, teamPackage)
       const fileErrors = [...metadata.errors]
       const rows = nonEmptyLineCount(text)
       if (metadata.errors.length === 0) {
@@ -113,15 +119,15 @@ export default function CsvImportDialog({
       }
 
       const activeMatches = metadata.queryNumber === activeQuery.queryNumber && metadata.type === activeQuery.type
-      const parseQuery = buildParseQuery(activeQuery, metadata, activeMatches)
+      const parseQuery = buildParseQuery(activeQuery, teamPackage, metadata, activeMatches)
       const result = parseQuery
         ? parsePastedCandidates(parseQuery, text, {
             strictOfficialVideoId: true,
-            expectedEventCount: activeMatches ? activeQuery.expectedEventCount : undefined,
+            expectedEventCount: parseQuery.expectedEventCount,
           })
         : undefined
       const importBlockReason = !activeMatches && metadata.queryNumber && metadata.type
-        ? `This file belongs to ${detectedNameFromMetadata(metadata)}.`
+        ? `This file belongs to ${detectedNameFromMetadata(metadata, teamPackage.filenameTemplate)}.`
         : fileErrors.length > 0
           ? 'Official filename and file-level validation must pass before import.'
           : undefined
@@ -294,9 +300,12 @@ export default function CsvImportDialog({
   )
 }
 
-function detectedNameFromMetadata(metadata: ParsedSubmissionFilename) {
+function detectedNameFromMetadata(metadata: ParsedSubmissionFilename, filenameTemplate: string) {
   if (!metadata.queryNumber || !metadata.type) return '--'
-  return `query-${metadata.queryNumber}-${metadata.type === 'QA' ? 'qa' : metadata.type.toLowerCase()}`
+  return filenameForPackageQuery(
+    { queryNumber: metadata.queryNumber, type: metadata.type },
+    filenameTemplate,
+  ).replace(/\.csv$/i, '')
 }
 
 function CsvSummary({

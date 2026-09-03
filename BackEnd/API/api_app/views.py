@@ -59,13 +59,20 @@ def Search(request):
         query = validated_data.get("query")
         collection = validated_data.get("collection")
         top_k = validated_data.get("top_k")
+        filters = validated_data.get("filters")
+
+        if not query:
+            return Response({'error': 'Enter a query or use /api/filter/ for filter-only search.'}, status=400)
 
         try:
-            points = query_manager.search(
-                collection_name=collection, 
-                query=query, 
-                search_limit=top_k
+            points = advanced_query_service.search(
+                collection_name=collection,
+                query=query,
+                search_limit=top_k,
+                filters=filters
             )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=400)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 
@@ -83,13 +90,20 @@ def AggregatedSearch(request):
         collection = validated_data.get("collection")
         query = validated_data.get("query")
         top_k = validated_data.get("top_k")
+        filters = validated_data.get("filters")
+
+        if not query:
+            return Response({'error': 'Enter a query or use /api/filter/ for filter-only search.'}, status=400)
 
         try:
-            points = query_manager.aggregated_search(
+            points = advanced_query_service.aggregated_search(
                 collection_name=collection,
                 query=query,
-                search_limit=top_k
+                search_limit=top_k,
+                filters=filters
             )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=400)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
 
@@ -158,26 +172,25 @@ def continuousSearch(request):
 @api_view(['POST'])
 def doFilter(request):
     collection_name = request.data.get("collection")
+    filters = request.data.get("filters")
     key = request.data.get("key")
     value = request.data.get("value")
+    top_k = int(request.data.get("top_k") or 100)
 
-    if not collection_name or not key or not value:
+    if not collection_name or (not filters and (not key or value in (None, ""))):
         return Response({'error': 'Missing parameter'}, status = 400)
-
-    field_mapping = {
-        "img_link": "frame_path",
-        "video_id": "vid_id",
-        "video_path": "vid_path",
-        "youtube_link": "yt_link",
-    }
 
     try:
         points = advanced_query_service.do_filter(
             collection_name = collection_name,
-            key = field_mapping.get(key, key),
+            filters = filters,
+            key = key,
             value = value,
+            max_results = max(1, min(1000, top_k)),
         )
+    except ValueError as e:
+        return Response({'error': str(e)}, status=400)
     except Exception as e:
-        return Response({'error': str(e)}, status=500)
+        return Response({'error': 'Filter search failed.'}, status=500)
 
     return Response({'results': formatResult(points)}, status = 200)

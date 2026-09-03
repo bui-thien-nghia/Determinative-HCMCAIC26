@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import type { TeamRoomMember } from '../../api'
 import {
   filenameForPackageQuery,
   getPackageQueryCandidateCount,
@@ -17,6 +18,7 @@ type PackageQueryTableProps = {
   onSelectQuery: (queryId: string) => void
   onChangeType: (queryId: string, type: SubmissionQueryType) => void
   validation?: PackageValidationResult
+  members?: TeamRoomMember[]
 }
 
 export default function PackageQueryTable({
@@ -24,6 +26,7 @@ export default function PackageQueryTable({
   onSelectQuery,
   onChangeType,
   validation,
+  members = [],
 }: PackageQueryTableProps) {
   const validationById = new Map(validation?.queries.map((query) => [query.queryId, query]))
 
@@ -43,10 +46,12 @@ export default function PackageQueryTable({
               key={query.id}
               query={query}
               active={teamPackage.activeQueryId === query.id}
+              filenameTemplate={teamPackage.filenameTemplate}
               status={validationById.get(query.id)?.status}
               validation={validationById.get(query.id)}
               onSelect={() => onSelectQuery(query.id)}
               onChangeType={(type) => onChangeType(query.id, type)}
+              viewers={members.filter((member) => member.activeQueryNumber === query.queryNumber)}
             />
           ))}
         </div>
@@ -58,19 +63,23 @@ export default function PackageQueryTable({
 function PackageQueryRow({
   query,
   active,
+  filenameTemplate,
   status,
   validation,
   onSelect,
   onChangeType,
+  viewers,
 }: {
   query: PackageQuery
   active: boolean
+  filenameTemplate: string
   status?: PackageQueryStatus
   validation?: PackageValidationResult['queries'][number]
   onSelect: () => void
   onChangeType: (type: SubmissionQueryType) => void
+  viewers: TeamRoomMember[]
 }) {
-  const filename = filenameForPackageQuery(query)
+  const filename = filenameForPackageQuery(query, filenameTemplate)
   const queryName = filename.replace(/\.csv$/i, '')
   const candidateCount = getPackageQueryCandidateCount(query)
   const rowRef = useRef<HTMLDivElement | null>(null)
@@ -118,6 +127,11 @@ function PackageQueryRow({
         <span className={`block truncate font-mono ${active ? 'font-bold text-blue-100' : 'text-slate-200'}`} title={queryName}>
           {queryName}
         </span>
+        {viewers.length > 0 && (
+          <span className="block truncate text-[7px] text-blue-300" title={viewers.map((viewer) => `${viewer.displayName} viewing`).join(', ')}>
+            {viewers.length === 1 ? `${viewers[0].displayName} viewing` : `${viewers[0].displayName} + ${viewers.length - 1} viewing`}
+          </span>
+        )}
       </div>
       <select
         value={query.type}

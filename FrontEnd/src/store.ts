@@ -1,21 +1,35 @@
 import { create } from 'zustand'
-import { api, DatasetConfigRequestError, type DatasetConfigResponse, type DatasetConfigStatus } from './api'
+import {
+  api,
+  DatasetConfigRequestError,
+  TeamRoomRequestError,
+  type DatasetConfigResponse,
+  type DatasetConfigStatus,
+  type SearchModality,
+  type TeamRoomMember,
+  type TeamRoomSnapshot,
+} from './api'
 import { setMediaUrlVersion } from './utils/media'
 import {
   DEFAULT_QUERY_NAME,
+  DEFAULT_FILENAME_TEMPLATE,
   DEFAULT_TEAM_QUERY_COUNT,
   MAX_SUBMISSION_ROWS,
   MAX_TRAKE_EVENT_COUNT,
   TEAM_SUBMISSION_VERSION,
+  configureTeamSubmissionPackage,
   createEmptySubmissionPackage,
   filenameForPackageQuery,
   getActivePackageQuery,
   getSubmissionFrame,
   getSubmissionKey,
   getSubmissionVideoId,
+  resetTeamSubmissionPackageAnswers,
+  validateFilenameTemplate,
   packageQueryId,
   packageQueryContainsFrame,
   type CandidateSource,
+  type PackageSetupConfig,
   type PackageQuery,
   type QueryCandidate,
   type QueryCandidatePatch,
@@ -86,11 +100,14 @@ export interface TrakeState {
 
 export interface SearchHistoryItem {
   query: string
+  queryText?: string
   mode: string
+  searchModality?: SearchModality
   language: string
   top_k: number
   collection: string | null
   model_id: string | null
+  filterValues?: FilterValues
   results: SearchResult[]
   timestamp: number
 }
@@ -119,166 +136,51 @@ export interface SearchResultFilterSummary {
   invalidFilters: string[]
 }
 
-const integerPattern = /^\d+$/
-const rangeFilterBaseFields = new Set(['frame_id', 'frame_order', 'time_order', 'timestamp'])
-const rangeFilterKeys = new Set([
-  'frame_id_from',
-  'frame_id_to',
-  'frame_order_from',
-  'frame_order_to',
-  'time_order_from',
-  'time_order_to',
-  'timestamp_from',
-  'timestamp_to',
-])
+export type TeamRoomSyncStatus = 'disconnected' | 'connecting' | 'synced' | 'syncing' | 'offline' | 'conflict'
 
-function normalizeFilterText(value: string) {
-  return value.trim()
+export type PendingQueryMutation = {
+  baseQueryRevision: number
+  query: PackageQuery
 }
+
+export type TeamRoomConflict = {
+  kind: 'query' | 'config'
+  message: string
+  queryNumber?: number
+  localQuery?: PackageQuery
+  latestQuery?: PackageQuery
+  latestQueryRevision?: number
+}
+
+export interface TeamRoomSession {
+  connected: boolean
+  roomCode: string | null
+  clientId: string
+  displayName: string
+  roomRevision: number
+  configRevision: number
+  queryRevisions: Record<string, number>
+  syncStatus: TeamRoomSyncStatus
+  members: TeamRoomMember[]
+  pendingQueryMutations: Record<string, PendingQueryMutation>
+  conflict: TeamRoomConflict | null
+  preRoomPackage: TeamSubmissionPackage | null
+}
+
+export {
+  buildSearchFilterRequest,
+  describeSearchQuery,
+  getActiveResultFilters,
+  getFilteredSearchResults,
+  getFilterValidationErrors,
+  getRangeFilterValidationError,
+  getSearchResultFilterSummary,
+  type BackendSearchFilters,
+  type SearchFilterRequest,
+} from './utils/searchFilters'
 
 function normalizeComparableText(value: unknown) {
   return value == null ? '' : String(value).trim()
-}
-
-function normalizeSearchText(value: unknown) {
-  return normalizeComparableText(value).toLocaleLowerCase()
-}
-
-function parseNumberFilter(value: string) {
-  const normalized = normalizeFilterText(value)
-  if (!normalized) return null
-  const numeric = Number(normalized)
-  return Number.isFinite(numeric) ? numeric : null
-}
-
-function rangeAliases(field: string) {
-  return field === 'time_order' ? ['time_order', 'timestamp'] : [field]
-}
-
-function firstRangeValue(filterValues: FilterValues, aliases: string[], suffix: 'from' | 'to') {
-  for (const alias of aliases) {
-    const value = normalizeFilterText(filterValues[`${alias}_${suffix}`] || '')
-    if (value) return value
-  }
-  return ''
-}
-
-function getRangeFilter(filterValues: FilterValues, field: 'frame_id' | 'frame_order' | 'time_order') {
-  const aliases = rangeAliases(field)
-  const from = firstRangeValue(filterValues, aliases, 'from')
-  const to = firstRangeValue(filterValues, aliases, 'to')
-  const legacyExact = aliases
-    .map((alias) => normalizeFilterText(filterValues[alias] || ''))
-    .find(Boolean) || ''
-
-  if (!from && !to && legacyExact) {
-    return { from: legacyExact, to: legacyExact }
-  }
-
-  return { from, to }
-}
-
-function isRangeFilterKey(field: string) {
-  return rangeFilterBaseFields.has(field) || rangeFilterKeys.has(field)
-}
-
-function parseRangeEndpoint(value: string, kind: 'integer' | 'number') {
-  const normalized = normalizeFilterText(value)
-  if (!normalized) return { value: null, invalid: false }
-  if (kind === 'integer') {
-    return integerPattern.test(normalized)
-      ? { value: Number(normalized), invalid: false }
-      : { value: null, invalid: true }
-  }
-
-  const numeric = Number(normalized)
-  return Number.isFinite(numeric)
-    ? { value: numeric, invalid: false }
-    : { value: null, invalid: true }
-}
-
-function getParsedRangeFilter(
-  filterValues: FilterValues,
-  field: 'frame_id' | 'frame_order' | 'time_order',
-  kind: 'integer' | 'number',
-) {
-  const range = getRangeFilter(filterValues, field)
-  const active = Boolean(range.from || range.to)
-  const from = parseRangeEndpoint(range.from, kind)
-  const to = parseRangeEndpoint(range.to, kind)
-  let error: string | null = null
-
-  if (from.invalid || to.invalid) {
-    error = kind === 'integer' ? 'Use integers only.' : 'Use a valid number.'
-  } else if (from.value != null && to.value != null && from.value > to.value) {
-    error = 'From must be <= To.'
-  }
-
-  return {
-    active,
-    from: from.value,
-    to: to.value,
-    error,
-  }
-}
-
-function matchesNumericRange(value: number | null, range: ReturnType<typeof getParsedRangeFilter>) {
-  if (!range.active) return true
-  if (range.error || value == null) return false
-  if (range.from != null && value < range.from) return false
-  if (range.to != null && value > range.to) return false
-  return true
-}
-
-function canonicalVideoId(result: SearchResult) {
-  return result.video_id || result.payload.video_id || ''
-}
-
-function canonicalTimeOrder(result: SearchResult) {
-  if (typeof result.payload.time_order === 'number') return result.payload.time_order
-  if (typeof result.payload.timestamp === 'number') return result.payload.timestamp
-  if (typeof result.timestamp === 'number') return result.timestamp
-  const payloadTime = parseNumberFilter(normalizeComparableText(result.payload.time_order))
-  if (payloadTime != null) return payloadTime
-  const payloadTimestamp = parseNumberFilter(normalizeComparableText(result.payload.timestamp))
-  if (payloadTimestamp != null) return payloadTimestamp
-  return null
-}
-
-function canonicalTranscript(result: SearchResult) {
-  return typeof result.payload.transcript === 'string'
-    ? result.payload.transcript
-    : typeof result.payload.caption === 'string'
-      ? result.payload.caption
-      : ''
-}
-
-function numericFrameId(result: SearchResult) {
-  const actual = normalizeComparableText(result.payload.frame_id)
-  return integerPattern.test(actual) ? Number(actual) : null
-}
-
-function numericFrameOrder(result: SearchResult) {
-  const actual = parseNumberFilter(normalizeComparableText(result.payload.frame_order))
-  return actual != null && Number.isInteger(actual) ? actual : null
-}
-
-function matchesTranscript(result: SearchResult, filterValue: string) {
-  const expected = normalizeSearchText(filterValue)
-  if (!expected) return true
-  return normalizeSearchText(canonicalTranscript(result)).includes(expected)
-}
-
-function matchesVideoId(result: SearchResult, filterValue: string) {
-  const expected = normalizeSearchText(filterValue)
-  if (!expected) return true
-  return normalizeSearchText(canonicalVideoId(result)).includes(expected)
-}
-
-function matchesGenericPayloadField(result: SearchResult, field: string, filterValue: string) {
-  const expected = normalizeSearchText(filterValue)
-  if (!expected) return true
-  return normalizeSearchText(result.payload[field]).includes(expected)
 }
 
 function getContinuousSearchSource(result: SearchResult) {
@@ -290,82 +192,6 @@ function getContinuousSearchSource(result: SearchResult) {
     sourceKey: videoId && frameId ? `${videoId}:${frameId}` : '',
   }
 }
-
-export function getActiveResultFilters(filterValues: FilterValues) {
-  const activeFilters: Array<readonly [string, string]> = []
-
-  for (const field of ['frame_id', 'frame_order', 'time_order'] as const) {
-    const range = getRangeFilter(filterValues, field)
-    if (range.from || range.to) {
-      activeFilters.push([field, `${range.from || '*'}..${range.to || '*'}`] as const)
-    }
-  }
-
-  Object.entries(filterValues)
-    .map(([field, value]) => [field, normalizeFilterText(value)] as const)
-    .filter(([field, value]) => !isRangeFilterKey(field) && value.length > 0)
-    .forEach((filter) => activeFilters.push(filter))
-
-  return activeFilters
-}
-
-export function getRangeFilterValidationError(filterValues: FilterValues, field: 'frame_id' | 'frame_order' | 'time_order') {
-  const kind = field === 'time_order' ? 'number' : 'integer'
-  return getParsedRangeFilter(filterValues, field, kind).error
-}
-
-export function getFilterValidationErrors(filterValues: FilterValues) {
-  const errors: string[] = []
-  const frameIdError = getRangeFilterValidationError(filterValues, 'frame_id')
-  const frameOrderError = getRangeFilterValidationError(filterValues, 'frame_order')
-  const timeOrderError = getRangeFilterValidationError(filterValues, 'time_order')
-
-  if (frameIdError) errors.push(`Frame Id: ${frameIdError}`)
-  if (frameOrderError) errors.push(`Frame Order: ${frameOrderError}`)
-  if (timeOrderError) errors.push(`Time Order: ${timeOrderError}`)
-
-  return errors
-}
-
-export function getFilteredSearchResults(searchResults: SearchResult[], filterValues: FilterValues) {
-  const activeFilters = getActiveResultFilters(filterValues)
-  if (activeFilters.length === 0) return searchResults
-  const frameIdRange = getParsedRangeFilter(filterValues, 'frame_id', 'integer')
-  const frameOrderRange = getParsedRangeFilter(filterValues, 'frame_order', 'integer')
-  const timeOrderRange = getParsedRangeFilter(filterValues, 'time_order', 'number')
-  const activeTextFilters = Object.entries(filterValues)
-    .map(([field, value]) => [field, normalizeFilterText(value)] as const)
-    .filter(([field, value]) => !isRangeFilterKey(field) && value.length > 0)
-
-  return searchResults.filter((result) => {
-    if (!matchesNumericRange(numericFrameId(result), frameIdRange)) return false
-    if (!matchesNumericRange(numericFrameOrder(result), frameOrderRange)) return false
-    if (!matchesNumericRange(canonicalTimeOrder(result), timeOrderRange)) return false
-
-    return activeTextFilters.every(([field, value]) => {
-      switch (field) {
-        case 'transcript':
-        case 'caption':
-          return matchesTranscript(result, value)
-        case 'video_id':
-        case 'vid_id':
-          return matchesVideoId(result, value)
-        default:
-          return matchesGenericPayloadField(result, field, value)
-      }
-    })
-  })
-}
-
-export function getSearchResultFilterSummary(searchResults: SearchResult[], filterValues: FilterValues): SearchResultFilterSummary {
-  const activeFilterCount = getActiveResultFilters(filterValues).length
-  return {
-    results: getFilteredSearchResults(searchResults, filterValues),
-    activeFilterCount,
-    invalidFilters: getFilterValidationErrors(filterValues),
-  }
-}
-
 
 interface AppState {
   currentDataset: string | null
@@ -396,6 +222,7 @@ interface AppState {
 	  submissionQueryName: string
 	  submissionPackage: SubmissionPackageFile[]
 	  teamSubmissionPackage: TeamSubmissionPackage
+	  roomSession: TeamRoomSession
 
   columns: number
   topK: number
@@ -407,6 +234,7 @@ interface AppState {
     model_id: string
     top_k: number
     mode?: string
+    searchModality?: SearchModality
     language?: string
   } | null
   previewResult: SearchResult | null
@@ -415,6 +243,7 @@ interface AppState {
   isLoading: boolean
   error: string | null
   displayMode: 'fast' | 'full'
+  searchModality: SearchModality
 
   setDataset: (dataset: string | null) => void
   setModel: (model: string) => void
@@ -441,6 +270,7 @@ interface AppState {
   setIsLoading: (loading: boolean) => void
 	  setError: (err: string | null) => void
 		  setDisplayMode: (mode: 'fast' | 'full') => void
+		  setSearchModality: (modality: SearchModality) => void
 			  setSearchStatus: (status: SearchStatus) => void
 			  continuousSearchFromResult: (result: SearchResult) => Promise<void>
 			  loadDatasetConfig: () => Promise<void>
@@ -461,7 +291,15 @@ interface AppState {
   updatePackageQueryCandidate: (queryId: string, candidateId: string, patch: QueryCandidatePatch) => void
   removePackageQueryCandidate: (queryId: string, candidateId: string) => void
   reorderPackageQueryCandidates: (queryId: string, fromIdx: number, toIdx: number) => void
-  resetTeamSubmissionPackage: () => void
+  applyTeamPackageSetup: (config: PackageSetupConfig, base?: { roomRevision: number; configRevision: number }) => Promise<boolean>
+  resetTeamSubmissionPackage: () => Promise<boolean>
+  createTeamRoom: (displayName: string) => Promise<string | null>
+  joinTeamRoom: (displayName: string, roomCode: string) => Promise<boolean>
+  leaveTeamRoom: () => void
+  resumeTeamRoom: () => void
+  pauseTeamRoom: () => void
+  syncTeamRoomNow: () => Promise<boolean>
+  resolveTeamRoomConflict: (resolution: 'room' | 'local') => void
 
   addToRecheckList: (item: Omit<RecheckItem, 'addedAt'>) => void
   removeFromRecheckList: (id: string) => void
@@ -502,15 +340,19 @@ const SUBMISSION_STORAGE_KEY = 'aic_submission_workspace'
 
 type LegacySubmissionState = Pick<AppState, 'mode' | 'submissionQueryName' | 'recheckList' | 'trakeState' | 'submissionPackage'>
 
-interface PersistedSubmissionWorkspaceV2 extends LegacySubmissionState {
+interface PersistedSubmissionWorkspaceV3 extends LegacySubmissionState {
   version: typeof TEAM_SUBMISSION_VERSION
+  searchModality?: SearchModality
   teamSubmissionPackage: TeamSubmissionPackage
   legacySubmissionPackageSnapshots: SubmissionPackageFile[]
+  roomSession: TeamRoomSession
 }
 
 type LoadedSubmissionState = Partial<LegacySubmissionState> & {
+  searchModality?: SearchModality
   teamSubmissionPackage: TeamSubmissionPackage
   legacySubmissionPackageSnapshots: SubmissionPackageFile[]
+  roomSession: TeamRoomSession
 }
 
 const compactRecheckItem = (item: RecheckItem): RecheckItem => ({
@@ -549,8 +391,34 @@ function isSubmissionQueryType(value: unknown): value is SubmissionQueryType {
   return value === 'KIS' || value === 'QA' || value === 'TRAKE'
 }
 
+function isSearchModality(value: unknown): value is SearchModality {
+  return value === 'visual' || value === 'textual' || value === 'hybrid'
+}
+
 function safeString(value: unknown) {
   return typeof value === 'string' ? value : ''
+}
+
+function makeRoomClientId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`
+}
+
+function defaultRoomSession(clientId = makeRoomClientId(), displayName = ''): TeamRoomSession {
+  return {
+    connected: false,
+    roomCode: null,
+    clientId,
+    displayName,
+    roomRevision: 0,
+    configRevision: 0,
+    queryRevisions: {},
+    syncStatus: 'disconnected',
+    members: [],
+    pendingQueryMutations: {},
+    conflict: null,
+    preRoomPackage: null,
+  }
 }
 
 function normalizeVideoId(value: unknown) {
@@ -812,6 +680,7 @@ function migrateLegacySubmissionState(raw: Record<string, unknown>): LoadedSubmi
       activeQueryId,
       queries,
     },
+    roomSession: defaultRoomSession(),
   }
 }
 
@@ -878,16 +747,23 @@ function sanitizePackageQuery(value: unknown, fallback: PackageQuery): PackageQu
 }
 
 function sanitizeTeamSubmissionPackage(value: unknown): TeamSubmissionPackage {
-  const emptyPackage = createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT)
-  if (!isPlainObject(value) || value.version !== TEAM_SUBMISSION_VERSION || !Array.isArray(value.queries)) {
-    return emptyPackage
+  if (!isPlainObject(value) || !Array.isArray(value.queries)) {
+    return createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT)
   }
 
+  const rawQueryCount = Number.isInteger(Number(value.queryCount))
+    ? Number(value.queryCount)
+    : value.queries.length || DEFAULT_TEAM_QUERY_COUNT
+  const emptyPackage = createEmptySubmissionPackage(rawQueryCount)
+  const filenameTemplateValidation = validateFilenameTemplate(value.filenameTemplate)
+  const filenameTemplate = filenameTemplateValidation.valid
+    ? filenameTemplateValidation.template
+    : DEFAULT_FILENAME_TEMPLATE
   const incomingByNumber = new Map<number, unknown>()
   for (const query of value.queries) {
     if (!isPlainObject(query)) continue
     const queryNumber = Number(query.queryNumber)
-    if (Number.isInteger(queryNumber) && queryNumber >= 1 && queryNumber <= DEFAULT_TEAM_QUERY_COUNT) {
+    if (Number.isInteger(queryNumber) && queryNumber >= 1 && queryNumber <= emptyPackage.queryCount) {
       incomingByNumber.set(queryNumber, query)
     }
   }
@@ -901,14 +777,57 @@ function sanitizeTeamSubmissionPackage(value: unknown): TeamSubmissionPackage {
 
   return {
     version: TEAM_SUBMISSION_VERSION,
+    queryCount: emptyPackage.queryCount,
+    filenameTemplate,
     activeQueryId,
     queries,
+  }
+}
+
+function sanitizeRoomSession(value: unknown, teamPackage: TeamSubmissionPackage): TeamRoomSession {
+  if (!isPlainObject(value)) return defaultRoomSession()
+  const fallback = defaultRoomSession(
+    safeString(value.clientId) || makeRoomClientId(),
+    safeString(value.displayName).slice(0, 80),
+  )
+  const roomCode = safeString(value.roomCode).trim().toUpperCase()
+  const connected = value.connected === true && Boolean(roomCode)
+  const rawQueryRevisions = isPlainObject(value.queryRevisions) ? value.queryRevisions : {}
+  const queryRevisions = Object.fromEntries(Object.entries(rawQueryRevisions)
+    .filter(([key, revision]) => /^\d+$/.test(key) && Number.isInteger(Number(revision)) && Number(revision) >= 1)
+    .map(([key, revision]) => [key, Number(revision)]))
+  const pendingQueryMutations: Record<string, PendingQueryMutation> = {}
+  if (isPlainObject(value.pendingQueryMutations)) {
+    for (const [key, pending] of Object.entries(value.pendingQueryMutations)) {
+      if (!isPlainObject(pending)) continue
+      const fallbackQuery = teamPackage.queries.find((query) => query.queryNumber === Number(key))
+      const baseQueryRevision = Number(pending.baseQueryRevision)
+      if (!fallbackQuery || !Number.isInteger(baseQueryRevision) || baseQueryRevision < 1) continue
+      pendingQueryMutations[key] = {
+        baseQueryRevision,
+        query: sanitizePackageQuery(pending.query, fallbackQuery),
+      }
+    }
+  }
+  return {
+    ...fallback,
+    connected,
+    roomCode: connected ? roomCode : null,
+    roomRevision: Math.max(0, Number(value.roomRevision) || 0),
+    configRevision: Math.max(0, Number(value.configRevision) || 0),
+    queryRevisions,
+    syncStatus: connected ? 'connecting' : 'disconnected',
+    pendingQueryMutations,
+    preRoomPackage: isPlainObject(value.preRoomPackage)
+      ? sanitizeTeamSubmissionPackage(value.preRoomPackage)
+      : null,
   }
 }
 
 const freshLoadedSubmissionState = (): LoadedSubmissionState => ({
   teamSubmissionPackage: createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT),
   legacySubmissionPackageSnapshots: [],
+  roomSession: defaultRoomSession(),
 })
 
 const loadSubmissionState = (): LoadedSubmissionState => {
@@ -918,17 +837,20 @@ const loadSubmissionState = (): LoadedSubmissionState => {
     const parsed = JSON.parse(data) as unknown
     if (!isPlainObject(parsed)) return freshLoadedSubmissionState()
 
-    if (parsed.version === TEAM_SUBMISSION_VERSION) {
+    if (parsed.version === TEAM_SUBMISSION_VERSION || parsed.version === 2) {
       const submissionPackage = safeSubmissionPackageFiles(parsed.submissionPackage)
       const legacySnapshots = safeSubmissionPackageFiles(parsed.legacySubmissionPackageSnapshots)
+      const teamSubmissionPackage = sanitizeTeamSubmissionPackage(parsed.teamSubmissionPackage)
       return {
         mode: isSubmissionQueryType(parsed.mode) ? parsed.mode : undefined,
+        searchModality: isSearchModality(parsed.searchModality) ? parsed.searchModality : undefined,
         submissionQueryName: safeString(parsed.submissionQueryName) || undefined,
         recheckList: safeRecheckItems(parsed.recheckList),
         trakeState: safeTrakeState(parsed.trakeState),
         submissionPackage,
         legacySubmissionPackageSnapshots: legacySnapshots.length > 0 ? legacySnapshots : submissionPackage,
-        teamSubmissionPackage: sanitizeTeamSubmissionPackage(parsed.teamSubmissionPackage),
+        teamSubmissionPackage,
+        roomSession: sanitizeRoomSession(parsed.roomSession, teamSubmissionPackage),
       }
     }
 
@@ -999,6 +921,216 @@ function updateTeamSubmissionQuery(
     : teamSubmissionPackage
 }
 
+let roomPollTimer: ReturnType<typeof setInterval> | null = null
+let roomHeartbeatTimer: ReturnType<typeof setInterval> | null = null
+let roomPollInFlight = false
+const roomQueryRequests = new Map<number, Promise<void>>()
+
+function stopTeamRoomLifecycle() {
+  if (roomPollTimer) clearInterval(roomPollTimer)
+  if (roomHeartbeatTimer) clearInterval(roomHeartbeatTimer)
+  roomPollTimer = null
+  roomHeartbeatTimer = null
+}
+
+function packageFromRoomSnapshot(snapshot: TeamRoomSnapshot, current: TeamSubmissionPackage) {
+  if (!snapshot.package) return current
+  const remote = sanitizeTeamSubmissionPackage({
+    ...snapshot.package,
+    activeQueryId: current.activeQueryId,
+  })
+  const pending = useStore.getState().roomSession.pendingQueryMutations
+  const pendingNumbers = new Set(Object.keys(pending).map(Number))
+  return {
+    ...remote,
+    activeQueryId: remote.queries.some((query) => query.id === current.activeQueryId)
+      ? current.activeQueryId
+      : remote.queries[0]?.id ?? null,
+    queries: remote.queries.map((query) => pendingNumbers.has(query.queryNumber)
+      ? pending[String(query.queryNumber)].query
+      : query),
+  }
+}
+
+function applyRoomSnapshot(snapshot: TeamRoomSnapshot) {
+  useStore.setState((state) => {
+    const wasOffline = state.roomSession.syncStatus === 'offline'
+    const teamSubmissionPackage = snapshot.changed === false
+      ? state.teamSubmissionPackage
+      : packageFromRoomSnapshot(snapshot, state.teamSubmissionPackage)
+    const hasPending = Object.keys(state.roomSession.pendingQueryMutations).length > 0
+    if (wasOffline) queueMicrotask(() => useStore.getState().addToast('Room reconnected', 'success'))
+    return {
+      teamSubmissionPackage,
+      roomSession: {
+        ...state.roomSession,
+        roomRevision: snapshot.revision,
+        configRevision: snapshot.configRevision ?? state.roomSession.configRevision,
+        queryRevisions: snapshot.queryRevisions ?? state.roomSession.queryRevisions,
+        members: snapshot.members ?? state.roomSession.members,
+        syncStatus: state.roomSession.conflict ? 'conflict' : hasPending ? 'syncing' : 'synced',
+      },
+    }
+  })
+}
+
+function markRoomOffline() {
+  useStore.setState((state) => {
+    if (!state.roomSession.connected || state.roomSession.syncStatus === 'conflict') return state
+    if (state.roomSession.syncStatus !== 'offline') {
+      queueMicrotask(() => useStore.getState().addToast('Room disconnected. Changes are saved locally.', 'error'))
+    }
+    return { roomSession: { ...state.roomSession, syncStatus: 'offline' } }
+  })
+}
+
+async function sendTeamRoomHeartbeat() {
+  const state = useStore.getState()
+  const session = state.roomSession
+  if (!session.connected || !session.roomCode) return
+  const activeQuery = getActivePackageQuery(state.teamSubmissionPackage)
+  try {
+    const response = await api.heartbeatTeamRoom(
+      session.roomCode,
+      session.clientId,
+      session.displayName,
+      activeQuery?.queryNumber ?? null,
+    )
+    useStore.setState((current) => ({
+      roomSession: { ...current.roomSession, members: response.members },
+    }))
+  } catch {
+    // Polling owns connectivity state so heartbeat failures do not spam the UI.
+  }
+}
+
+async function flushTeamRoomQuery(queryNumber: number): Promise<void> {
+  const existingRequest = roomQueryRequests.get(queryNumber)
+  if (existingRequest) return existingRequest
+  const request = (async () => {
+    const state = useStore.getState()
+    const session = state.roomSession
+    const pending = session.pendingQueryMutations[String(queryNumber)]
+    if (!session.connected || !session.roomCode || !pending || session.conflict) return
+    try {
+      const response = await api.updateTeamRoomQuery(
+        session.roomCode,
+        queryNumber,
+        pending.baseQueryRevision,
+        pending.query,
+      )
+      useStore.setState((current) => {
+        const currentPending = current.roomSession.pendingQueryMutations[String(queryNumber)]
+        const pendingQueryMutations = { ...current.roomSession.pendingQueryMutations }
+        if (currentPending === pending) {
+          delete pendingQueryMutations[String(queryNumber)]
+        } else if (currentPending) {
+          pendingQueryMutations[String(queryNumber)] = {
+            ...currentPending,
+            baseQueryRevision: response.queryRevision,
+          }
+        }
+        return {
+          roomSession: {
+            ...current.roomSession,
+            queryRevisions: {
+              ...current.roomSession.queryRevisions,
+              [String(queryNumber)]: response.queryRevision,
+            },
+            pendingQueryMutations,
+            syncStatus: Object.keys(pendingQueryMutations).length > 0 ? 'syncing' : 'synced',
+          },
+        }
+      })
+    } catch (error) {
+      if (error instanceof TeamRoomRequestError && error.statusCode === 409 && error.payload?.code === 'QUERY_CONFLICT') {
+        const latestQuery = error.payload.latestQuery as PackageQuery | undefined
+        const latestQueryRevision = Number(error.payload.queryRevision)
+        useStore.setState((current) => ({
+          roomSession: {
+            ...current.roomSession,
+            syncStatus: 'conflict',
+            conflict: {
+              kind: 'query',
+              message: error.message,
+              queryNumber,
+              localQuery: current.roomSession.pendingQueryMutations[String(queryNumber)]?.query ?? pending.query,
+              latestQuery,
+              latestQueryRevision,
+            },
+          },
+        }))
+        useStore.getState().addToast(`Sync conflict on Query ${queryNumber}`, 'error')
+      } else {
+        markRoomOffline()
+      }
+    }
+  })().finally(() => {
+    roomQueryRequests.delete(queryNumber)
+    const session = useStore.getState().roomSession
+    const current = session.pendingQueryMutations[String(queryNumber)]
+    if (current && !session.conflict && session.syncStatus !== 'offline') void flushTeamRoomQuery(queryNumber)
+  })
+  roomQueryRequests.set(queryNumber, request)
+  return request
+}
+
+function queueTeamRoomQuery(queryId: string) {
+  const state = useStore.getState()
+  const session = state.roomSession
+  if (!session.connected) return
+  const query = state.teamSubmissionPackage.queries.find((item) => item.id === queryId)
+  if (!query) return
+  const key = String(query.queryNumber)
+  const existing = session.pendingQueryMutations[key]
+  useStore.setState((current) => ({
+    roomSession: {
+      ...current.roomSession,
+      pendingQueryMutations: {
+        ...current.roomSession.pendingQueryMutations,
+        [key]: {
+          baseQueryRevision: existing?.baseQueryRevision ?? current.roomSession.queryRevisions[key] ?? 1,
+          query,
+        },
+      },
+      syncStatus: current.roomSession.conflict ? 'conflict' : 'syncing',
+    },
+  }))
+  void flushTeamRoomQuery(query.queryNumber)
+}
+
+async function pollTeamRoom(forceFull = false) {
+  if (roomPollInFlight) return
+  const state = useStore.getState()
+  const session = state.roomSession
+  if (!session.connected || !session.roomCode) return
+  roomPollInFlight = true
+  try {
+    const snapshot = await api.getTeamRoom(
+      session.roomCode,
+      forceFull ? undefined : session.roomRevision,
+    )
+    applyRoomSnapshot(snapshot)
+    for (const key of Object.keys(useStore.getState().roomSession.pendingQueryMutations)) {
+      void flushTeamRoomQuery(Number(key))
+    }
+  } catch {
+    markRoomOffline()
+  } finally {
+    roomPollInFlight = false
+  }
+}
+
+function startTeamRoomLifecycle() {
+  stopTeamRoomLifecycle()
+  const session = useStore.getState().roomSession
+  if (!session.connected || !session.roomCode) return
+  void pollTeamRoom(true)
+  void sendTeamRoomHeartbeat()
+  roomPollTimer = setInterval(() => void pollTeamRoom(), 1500)
+  roomHeartbeatTimer = setInterval(() => void sendTeamRoomHeartbeat(), 10000)
+}
+
 export const useStore = create<AppState>((set, get) => ({
   currentDataset: 'aic2026_v2',
   currentModel: 'siglip2',
@@ -1032,11 +1164,13 @@ export const useStore = create<AppState>((set, get) => ({
   submissionQueryName: persistedSubmission.submissionQueryName || DEFAULT_QUERY_NAME,
   submissionPackage: persistedSubmission.submissionPackage || [],
   teamSubmissionPackage: persistedSubmission.teamSubmissionPackage,
+  roomSession: persistedSubmission.roomSession,
 
   columns: 4,
   topK: 100,
   language: 'AUTO',
   mode: persistedSubmission.mode || 'KIS',
+  searchModality: persistedSubmission.searchModality || 'hybrid',
   lastSearch: null,
   previewResult: null,
   playingVideo: null,
@@ -1253,6 +1387,7 @@ export const useStore = create<AppState>((set, get) => ({
   setIsLoading: (loading) => set({ isLoading: loading }),
   setError: (err) => set({ error: err }),
   setDisplayMode: (displayMode) => set({ displayMode }),
+  setSearchModality: (searchModality) => set({ searchModality }),
   setSubmissionQueryName: (submissionQueryName) => set({ submissionQueryName }),
   addSubmissionPackageFile: (file) => set((state) => ({
     submissionPackage: [
@@ -1264,42 +1399,55 @@ export const useStore = create<AppState>((set, get) => ({
     submissionPackage: state.submissionPackage.filter((file) => file.filename !== filename),
   })),
   clearSubmissionPackage: () => set({ submissionPackage: [] }),
-  setActivePackageQuery: (queryId) => set((state) => (
-    state.teamSubmissionPackage.queries.some((query) => query.id === queryId)
-      ? { teamSubmissionPackage: { ...state.teamSubmissionPackage, activeQueryId: queryId } }
-      : state
-  )),
-  setPackageQueryType: (queryId, type) => set((state) => ({
-    teamSubmissionPackage: updateTeamSubmissionQuery(
-      state.teamSubmissionPackage,
-      queryId,
-      (query) => query.type === type
-        ? query
-        : {
-            ...query,
-            type,
-            candidates: [],
-            reviewed: false,
-            expectedEventCount: type === 'TRAKE' ? query.expectedEventCount : undefined,
-            updatedAt: Date.now(),
-          },
-    ),
-  })),
-  setPackageQueryReviewed: (queryId, reviewed) => set((state) => ({
+  setActivePackageQuery: (queryId) => {
+    set((state) => (
+      state.teamSubmissionPackage.queries.some((query) => query.id === queryId)
+        ? { teamSubmissionPackage: { ...state.teamSubmissionPackage, activeQueryId: queryId } }
+        : state
+    ))
+    void sendTeamRoomHeartbeat()
+  },
+  setPackageQueryType: (queryId, type) => {
+    set((state) => ({
+      teamSubmissionPackage: updateTeamSubmissionQuery(
+        state.teamSubmissionPackage,
+        queryId,
+        (query) => query.type === type
+          ? query
+          : {
+              ...query,
+              type,
+              candidates: [],
+              reviewed: false,
+              expectedEventCount: type === 'TRAKE' ? query.expectedEventCount : undefined,
+              updatedAt: Date.now(),
+            },
+      ),
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  setPackageQueryReviewed: (queryId, reviewed) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
       (query) => ({ ...query, reviewed, updatedAt: Date.now() }),
     ),
-  })),
-  setPackageQueryNotes: (queryId, notes) => set((state) => ({
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  setPackageQueryNotes: (queryId, notes) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
       (query) => ({ ...query, notes, updatedAt: Date.now() }),
     ),
-  })),
-  setPackageQueryExpectedEventCount: (queryId, expectedEventCount) => set((state) => ({
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  setPackageQueryExpectedEventCount: (queryId, expectedEventCount) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
@@ -1319,8 +1467,11 @@ export const useStore = create<AppState>((set, get) => ({
         }
       },
     ),
-  })),
-  replacePackageQueryCandidates: (queryId, candidates) => set((state) => ({
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  replacePackageQueryCandidates: (queryId, candidates) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
@@ -1333,8 +1484,11 @@ export const useStore = create<AppState>((set, get) => ({
         updatedAt: Date.now(),
       }),
     ),
-  })),
-  addPackageQueryCandidate: (queryId, candidate) => set((state) => ({
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  addPackageQueryCandidate: (queryId, candidate) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
@@ -1349,7 +1503,9 @@ export const useStore = create<AppState>((set, get) => ({
         }
       },
     ),
-  })),
+    }))
+    queueTeamRoomQuery(queryId)
+  },
   addPackageQueryCandidates: (queryId, candidates) => {
     let added = 0
     set((state) => ({
@@ -1373,9 +1529,11 @@ export const useStore = create<AppState>((set, get) => ({
         },
       ),
     }))
+    if (added > 0) queueTeamRoomQuery(queryId)
     return added
   },
-  updatePackageQueryCandidate: (queryId, candidateId, patch) => set((state) => ({
+  updatePackageQueryCandidate: (queryId, candidateId, patch) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
@@ -1398,8 +1556,11 @@ export const useStore = create<AppState>((set, get) => ({
           : query
       },
     ),
-  })),
-  removePackageQueryCandidate: (queryId, candidateId) => set((state) => ({
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  removePackageQueryCandidate: (queryId, candidateId) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
@@ -1410,8 +1571,11 @@ export const useStore = create<AppState>((set, get) => ({
           : { ...query, candidates, reviewed: false, updatedAt: Date.now() }
       },
     ),
-  })),
-  reorderPackageQueryCandidates: (queryId, fromIdx, toIdx) => set((state) => ({
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  reorderPackageQueryCandidates: (queryId, fromIdx, toIdx) => {
+    set((state) => ({
     teamSubmissionPackage: updateTeamSubmissionQuery(
       state.teamSubmissionPackage,
       queryId,
@@ -1425,10 +1589,244 @@ export const useStore = create<AppState>((set, get) => ({
         return { ...query, candidates, reviewed: false, updatedAt: Date.now() }
       },
     ),
-  })),
-  resetTeamSubmissionPackage: () => set({
-    teamSubmissionPackage: createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT),
-  }),
+    }))
+    queueTeamRoomQuery(queryId)
+  },
+  applyTeamPackageSetup: async (config, base) => {
+    if (get().roomSession.connected && !await get().syncTeamRoomNow()) return false
+    const state = get()
+    const nextPackage = configureTeamSubmissionPackage(state.teamSubmissionPackage, config)
+    if (!state.roomSession.connected || !state.roomSession.roomCode) {
+      set({ teamSubmissionPackage: nextPackage })
+      return true
+    }
+    set((current) => ({ roomSession: { ...current.roomSession, syncStatus: 'syncing' } }))
+    try {
+      const snapshot = await api.updateTeamRoomConfig(
+        state.roomSession.roomCode,
+        base?.roomRevision ?? state.roomSession.roomRevision,
+        base?.configRevision ?? state.roomSession.configRevision,
+        nextPackage,
+      )
+      applyRoomSnapshot(snapshot)
+      return true
+    } catch (error) {
+      if (error instanceof TeamRoomRequestError && error.statusCode === 409) {
+        set((current) => ({
+          roomSession: {
+            ...current.roomSession,
+            syncStatus: 'conflict',
+            conflict: { kind: 'config', message: error.message },
+          },
+        }))
+        get().addToast('Package Setup conflict. Reload the room state and try again.', 'error')
+      } else {
+        markRoomOffline()
+      }
+      return false
+    }
+  },
+  resetTeamSubmissionPackage: async () => {
+    if (get().roomSession.connected && !await get().syncTeamRoomNow()) return false
+    const state = get()
+    const nextPackage = resetTeamSubmissionPackageAnswers(state.teamSubmissionPackage)
+    if (!state.roomSession.connected || !state.roomSession.roomCode) {
+      set({ teamSubmissionPackage: nextPackage })
+      return true
+    }
+    try {
+      const snapshot = await api.updateTeamRoomConfig(
+        state.roomSession.roomCode,
+        state.roomSession.roomRevision,
+        state.roomSession.configRevision,
+        nextPackage,
+      )
+      applyRoomSnapshot(snapshot)
+      return true
+    } catch (error) {
+      if (error instanceof TeamRoomRequestError && error.statusCode === 409) {
+        set((current) => ({
+          roomSession: {
+            ...current.roomSession,
+            syncStatus: 'conflict',
+            conflict: { kind: 'config', message: error.message },
+          },
+        }))
+        get().addToast('Reset was not applied because the shared room changed.', 'error')
+      } else {
+        markRoomOffline()
+      }
+      return false
+    }
+  },
+  createTeamRoom: async (displayName) => {
+    const name = displayName.trim().slice(0, 80)
+    if (!name) return null
+    const state = get()
+    set((current) => ({
+      roomSession: { ...current.roomSession, displayName: name, syncStatus: 'connecting' },
+    }))
+    try {
+      const snapshot = await api.createTeamRoom(name, state.teamSubmissionPackage)
+      if (!snapshot.roomCode || !snapshot.package || !snapshot.queryRevisions || snapshot.configRevision == null) {
+        throw new Error('Room response was incomplete.')
+      }
+      set((current) => ({
+        teamSubmissionPackage: packageFromRoomSnapshot(snapshot, current.teamSubmissionPackage),
+        roomSession: {
+          ...current.roomSession,
+          connected: true,
+          roomCode: snapshot.roomCode ?? null,
+          displayName: name,
+          roomRevision: snapshot.revision,
+          configRevision: snapshot.configRevision ?? 1,
+          queryRevisions: snapshot.queryRevisions ?? {},
+          syncStatus: 'synced',
+          members: snapshot.members ?? [],
+          pendingQueryMutations: {},
+          conflict: null,
+          preRoomPackage: state.teamSubmissionPackage,
+        },
+      }))
+      startTeamRoomLifecycle()
+      get().addToast('Shared room created', 'success')
+      return snapshot.roomCode
+    } catch (error) {
+      set((current) => ({
+        roomSession: { ...current.roomSession, connected: false, roomCode: null, syncStatus: 'disconnected' },
+      }))
+      console.error(error)
+      get().addToast('Could not create room.', 'error')
+      return null
+    }
+  },
+  joinTeamRoom: async (displayName, roomCode) => {
+    const name = displayName.trim().slice(0, 80)
+    const normalizedCode = roomCode.trim().toUpperCase()
+    if (!name || !normalizedCode) return false
+    const state = get()
+    set((current) => ({
+      roomSession: { ...current.roomSession, displayName: name, syncStatus: 'connecting' },
+    }))
+    try {
+      const snapshot = await api.getTeamRoom(normalizedCode)
+      if (!snapshot.package || !snapshot.queryRevisions || snapshot.configRevision == null) {
+        throw new Error('Room response was incomplete.')
+      }
+      set((current) => ({
+        teamSubmissionPackage: packageFromRoomSnapshot(snapshot, current.teamSubmissionPackage),
+        roomSession: {
+          ...current.roomSession,
+          connected: true,
+          roomCode: snapshot.roomCode ?? normalizedCode,
+          displayName: name,
+          roomRevision: snapshot.revision,
+          configRevision: snapshot.configRevision ?? 1,
+          queryRevisions: snapshot.queryRevisions ?? {},
+          syncStatus: 'synced',
+          members: snapshot.members ?? [],
+          pendingQueryMutations: {},
+          conflict: null,
+          preRoomPackage: state.teamSubmissionPackage,
+        },
+      }))
+      startTeamRoomLifecycle()
+      get().addToast('Joined shared room', 'success')
+      return true
+    } catch (error) {
+      set((current) => ({
+        roomSession: { ...current.roomSession, connected: false, roomCode: null, syncStatus: 'disconnected' },
+      }))
+      console.error(error)
+      const message = error instanceof TeamRoomRequestError && error.statusCode === 404
+        ? 'Room not found.'
+        : 'Could not join room.'
+      get().addToast(message, 'error')
+      return false
+    }
+  },
+  leaveTeamRoom: () => {
+    stopTeamRoomLifecycle()
+    set((state) => ({
+      roomSession: defaultRoomSession(state.roomSession.clientId, state.roomSession.displayName),
+    }))
+    get().addToast('Left shared room. The latest package remains local.', 'info')
+  },
+  resumeTeamRoom: () => {
+    if (!get().roomSession.connected) return
+    set((state) => ({ roomSession: { ...state.roomSession, syncStatus: 'connecting' } }))
+    startTeamRoomLifecycle()
+  },
+  pauseTeamRoom: () => stopTeamRoomLifecycle(),
+  syncTeamRoomNow: async () => {
+    const initial = get().roomSession
+    if (!initial.connected || !initial.roomCode) return true
+    if (initial.conflict) return false
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const pendingNumbers = Object.keys(get().roomSession.pendingQueryMutations).map(Number)
+      if (pendingNumbers.length === 0) break
+      await Promise.all(pendingNumbers.map((queryNumber) => flushTeamRoomQuery(queryNumber)))
+      if (get().roomSession.conflict || get().roomSession.syncStatus === 'offline') return false
+    }
+    if (Object.keys(get().roomSession.pendingQueryMutations).length > 0) return false
+    try {
+      const snapshot = await api.getTeamRoom(initial.roomCode)
+      applyRoomSnapshot(snapshot)
+      return !get().roomSession.conflict && Object.keys(get().roomSession.pendingQueryMutations).length === 0
+    } catch {
+      markRoomOffline()
+      return false
+    }
+  },
+  resolveTeamRoomConflict: (resolution) => {
+    const state = get()
+    const conflict = state.roomSession.conflict
+    if (!conflict) return
+    if (conflict.kind === 'config') {
+      set((current) => ({
+        roomSession: { ...current.roomSession, conflict: null, syncStatus: 'connecting' },
+      }))
+      void pollTeamRoom(true)
+      return
+    }
+    const queryNumber = conflict.queryNumber
+    if (!queryNumber || !conflict.latestQuery || !conflict.localQuery || !conflict.latestQueryRevision) return
+    const key = String(queryNumber)
+    if (resolution === 'room') {
+      set((current) => {
+        const pendingQueryMutations = { ...current.roomSession.pendingQueryMutations }
+        delete pendingQueryMutations[key]
+        return {
+          teamSubmissionPackage: updateTeamSubmissionQuery(
+            current.teamSubmissionPackage,
+            conflict.latestQuery!.id,
+            () => conflict.latestQuery!,
+          ),
+          roomSession: {
+            ...current.roomSession,
+            queryRevisions: { ...current.roomSession.queryRevisions, [key]: conflict.latestQueryRevision! },
+            pendingQueryMutations,
+            conflict: null,
+            syncStatus: Object.keys(pendingQueryMutations).length ? 'syncing' : 'synced',
+          },
+        }
+      })
+      return
+    }
+    set((current) => ({
+      roomSession: {
+        ...current.roomSession,
+        queryRevisions: { ...current.roomSession.queryRevisions, [key]: conflict.latestQueryRevision! },
+        pendingQueryMutations: {
+          ...current.roomSession.pendingQueryMutations,
+          [key]: { baseQueryRevision: conflict.latestQueryRevision!, query: conflict.localQuery! },
+        },
+        conflict: null,
+        syncStatus: 'syncing',
+      },
+    }))
+    void flushTeamRoomQuery(queryNumber)
+  },
 
   addToRecheckList: (item) => set((state) => {
     if (state.recheckList.length >= 100) return state
@@ -1497,7 +1895,7 @@ export const useStore = create<AppState>((set, get) => ({
       return false
     }
 
-    const queryName = filenameForPackageQuery(activeQuery).replace(/\.csv$/i, '')
+    const queryName = filenameForPackageQuery(activeQuery, state.teamSubmissionPackage.filenameTemplate).replace(/\.csv$/i, '')
     const source = sourceFromSearchResult(result)
 
     if (activeQuery.type === 'KIS' || activeQuery.type === 'QA') {
@@ -1832,15 +2230,17 @@ export const useStore = create<AppState>((set, get) => ({
 
 useStore.subscribe((state) => {
   try {
-    const payload: PersistedSubmissionWorkspaceV2 = {
+    const payload: PersistedSubmissionWorkspaceV3 = {
       version: TEAM_SUBMISSION_VERSION,
       mode: state.mode,
+      searchModality: state.searchModality,
       submissionQueryName: state.submissionQueryName,
       recheckList: state.recheckList.map(compactRecheckItem),
       trakeState: compactTrakeState(state.trakeState),
       submissionPackage: state.submissionPackage,
       legacySubmissionPackageSnapshots: state.submissionPackage,
       teamSubmissionPackage: state.teamSubmissionPackage,
+      roomSession: state.roomSession,
     }
     localStorage.setItem(SUBMISSION_STORAGE_KEY, JSON.stringify(payload))
   } catch {

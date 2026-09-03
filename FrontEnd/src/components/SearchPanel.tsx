@@ -1,9 +1,46 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, Loader2, Type, Mic, FileQuestion, Trash, SlidersHorizontal, Database, ChevronDown, FolderOpen } from 'lucide-react'
-import { getRangeFilterValidationError, getSearchResultFilterSummary, useStore } from '../store'
+import {
+  buildSearchFilterRequest,
+  describeSearchQuery,
+  getRangeFilterValidationError,
+  getSearchResultFilterSummary,
+  useStore,
+} from '../store'
 import { api } from '../api'
+import type { SearchModality } from '../api'
 
 const DEFAULT_LANGUAGE = 'AUTO'
+const retrievalModes = [
+  {
+    id: 'fast' as const,
+    label: 'Fast',
+    description: 'Standard retrieval for quick results.',
+  },
+  {
+    id: 'full' as const,
+    label: 'Deep',
+    description: 'Aggregated retrieval and reranking for refined results.',
+  },
+]
+
+const searchModalities: Array<{ id: SearchModality; label: string; description: string }> = [
+  {
+    id: 'visual',
+    label: 'Visual',
+    description: 'Placeholder for image/frame-only retrieval once backend support exists.',
+  },
+  {
+    id: 'textual',
+    label: 'Textual',
+    description: 'Placeholder for text/transcript-only retrieval once backend support exists.',
+  },
+  {
+    id: 'hybrid',
+    label: 'Hybrid',
+    description: 'Current backend behavior.',
+  },
+]
 
 function formatFieldLabel(field: string) {
   return field
@@ -56,7 +93,8 @@ export default function SearchPanel() {
     searchHistory,
     setLastSearch,
     isLoading, setIsLoading,
-	    displayMode,
+	    displayMode, setDisplayMode,
+      searchModality, setSearchModality,
 	    error, setError,
 	    addToast,
 		    setSearchStatus,
@@ -123,16 +161,37 @@ export default function SearchPanel() {
     () => getSearchResultFilterSummary(searchResults, filterValues),
     [filterValues, searchResults],
   )
+  const searchFilterRequest = useMemo(
+    () => buildSearchFilterRequest(filterValues, collectionSchema),
+    [collectionSchema, filterValues],
+  )
   const frameIdRangeError = getRangeFilterValidationError(filterValues, 'frame_id')
   const frameOrderRangeError = getRangeFilterValidationError(filterValues, 'frame_order')
   const timeOrderRangeError = getRangeFilterValidationError(filterValues, 'time_order')
+  const queryToSearch = query.trim()
+  const canSearch = Boolean(
+    currentDataset
+      && !isLoading
+      && searchFilterRequest.errors.length === 0
+      && (queryToSearch || searchFilterRequest.hasBackendFilters),
+  )
 
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
 
-    const queryToSearch = query.trim()
+    if (searchFilterRequest.errors.length > 0) {
+      const msg = searchFilterRequest.errors.join(' ')
+      setError(msg)
+      addToast(msg, 'error')
+      return
+    }
 
-	    if (!queryToSearch) return
+	    if (!queryToSearch && !searchFilterRequest.hasBackendFilters) {
+	      const msg = 'Enter a query or at least one filter.'
+	      setError(msg)
+	      addToast(msg, 'error')
+	      return
+	    }
 
 	    if (!currentDataset) {
 	      const msg = 'No collection selected'
@@ -154,32 +213,39 @@ export default function SearchPanel() {
     const startTime = performance.now()
 
     try {
-      const rawResults = displayMode === 'full'
-        ? await api.aggregatedSearch(queryToSearch, collection, modelId, safeTopK)
-        : await api.search(queryToSearch, collection, modelId, safeTopK, filterValues)
+      const rawResults = !queryToSearch
+        ? await api.filterSearch(collection, searchFilterRequest.filters, safeTopK)
+        : displayMode === 'full'
+          ? await api.aggregatedSearch(queryToSearch, collection, modelId, safeTopK, searchFilterRequest.filters, searchModality)
+          : await api.search(queryToSearch, collection, modelId, safeTopK, searchFilterRequest.filters, searchModality)
       if (searchRequestIdRef.current !== requestId) return
       const results = displayMode === 'full' ? rawResults.slice(0, safeTopK) : rawResults
       const latency = (performance.now() - startTime) / 1000
+      const historyQuery = describeSearchQuery(queryToSearch, searchFilterRequest)
       setSearchStatus({ state: 'success', latency })
       setSearchResults(results || [])
 
       setLastSearch({
-        query: queryToSearch,
+        query: historyQuery,
         collection,
         model_id: modelId,
         top_k: safeTopK,
         mode,
+        searchModality,
         language: DEFAULT_LANGUAGE,
       })
 
       addToSearchHistory({
-        query: queryToSearch,
+        query: historyQuery,
+        queryText: queryToSearch,
         mode,
+        searchModality,
         language: DEFAULT_LANGUAGE,
         top_k: safeTopK,
         collection,
         model_id: modelId,
         results: results || [],
+        filterValues: { ...filterValues },
         timestamp: Date.now()
       })
       addToast(`Search complete: ${results?.length || 0} result(s)`, 'success')
@@ -204,14 +270,19 @@ export default function SearchPanel() {
   }
 
   const handleRestoreHistory = (h: any) => {
-    setQuery(h.query)
+    setQuery(typeof h.queryText === 'string' ? h.queryText : h.query)
     setMode(h.mode)
+    if (h.searchModality) setSearchModality(h.searchModality)
     setTopK(h.top_k)
     const restoredCollection = h.collection && availableCollections.includes(h.collection)
       ? h.collection
       : availableCollections[0]
     if (restoredCollection) setDataset(restoredCollection)
     if (h.model_id) setModel(h.model_id)
+    clearFilterValues()
+    Object.entries(h.filterValues || {}).forEach(([field, value]) => {
+      if (typeof value === 'string') setFilterValue(field, value)
+    })
     setSearchResults(h.results)
     addToast('History restored', 'info')
   }
@@ -232,6 +303,49 @@ export default function SearchPanel() {
 
   return (
     <div className="flex flex-col h-full bg-slate-900 border-r border-slate-800 text-sm overflow-y-auto custom-scrollbar">
+      <div className="shrink-0 border-b border-slate-800 bg-slate-950/70 p-3">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Retrieval</div>
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
+          {retrievalModes.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setDisplayMode(item.id)}
+              aria-label={`${item.label} Mode: ${item.description}`}
+              aria-pressed={displayMode === item.id}
+              title={item.description}
+              className={`rounded border px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                displayMode === item.id
+                  ? 'border-blue-500/70 bg-blue-600/20 text-blue-300'
+                  : 'border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Search modality</div>
+        <div className="mt-2 grid grid-cols-3 gap-1.5">
+          {searchModalities.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setSearchModality(item.id)}
+              aria-pressed={searchModality === item.id}
+              title={item.description}
+              className={`rounded border px-1.5 py-1.5 text-[9px] font-bold uppercase tracking-wider transition-colors ${
+                searchModality === item.id
+                  ? 'border-cyan-500/70 bg-cyan-500/15 text-cyan-200'
+                  : 'border-slate-800 bg-slate-900 text-slate-500 hover:border-slate-700 hover:bg-slate-800 hover:text-slate-300'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* KIS / QA / TRAKE mode selector */}
       <div className="flex shrink-0 border-b border-slate-800 bg-slate-950/50">
         {tabs.map(tab => {
@@ -281,7 +395,7 @@ export default function SearchPanel() {
         <div className="flex gap-2">
 	          <button
 	            onClick={() => handleSearch()}
-	            disabled={isLoading || !query.trim() || !currentDataset}
+	            disabled={!canSearch}
 	            className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
 	          >
             {isLoading ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
@@ -411,7 +525,7 @@ export default function SearchPanel() {
 		            <FilterBlock icon={<Database size={16} />} title="Schema Filters">
 		              <div className="flex items-start justify-between gap-3">
 		                <div className="text-[10px] text-amber-400/90 leading-relaxed">
-		                  Filters are applied locally to the current retrieved results. They do not change backend retrieval or ranking.
+		                  Search filters constrain results in the current collection.
 		                </div>
 		                {filterSummary.activeFilterCount > 0 && (
 		                  <button
@@ -425,7 +539,7 @@ export default function SearchPanel() {
 		              </div>
 		              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
 		                {filterSummary.activeFilterCount > 0
-		                  ? `${filterSummary.results.length} / ${searchResults.length} results`
+		                  ? `${filterSummary.activeFilterCount} active · ${searchResults.length} results`
 		                  : `${searchResults.length} results`}
 		              </div>
 		              {filterSummary.invalidFilters.length > 0 && (

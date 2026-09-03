@@ -19,8 +19,6 @@ function App() {
     setPlayingVideo,
     toasts,
     removeToast,
-    displayMode,
-    setDisplayMode,
     currentDataset,
     setAvailableCollections,
     setCollectionSchema,
@@ -140,33 +138,6 @@ function App() {
 
           <div className="flex items-center gap-1.5">
             <SystemStatus />
-            <div className="flex items-center bg-slate-800 rounded-md border border-slate-700 overflow-hidden ml-2">
-              <div className="relative group/fast">
-                <button
-                  onClick={() => setDisplayMode('fast')}
-                  aria-label="Fast Mode: standard retrieval for quick results."
-                  aria-pressed={displayMode === 'fast'}
-                  className={`px-3 py-1 text-[11px] font-bold tracking-wider transition-colors ${
-                    displayMode === 'fast' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                  }`}
-                >
-                  Fast
-                </button>
-              </div>
-              <div className="w-px h-4 bg-slate-700" />
-              <div className="relative group/full">
-                <button
-                  onClick={() => setDisplayMode('full')}
-                  aria-label="Deep Mode: aggregated retrieval and reranking for more refined results."
-                  aria-pressed={displayMode === 'full'}
-                  className={`px-3 py-1 text-[11px] font-bold tracking-wider transition-colors ${
-                    displayMode === 'full' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                  }`}
-                >
-                  Deep
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       </header>

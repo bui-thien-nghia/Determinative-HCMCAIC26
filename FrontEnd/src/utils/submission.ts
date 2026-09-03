@@ -22,8 +22,10 @@ export const MAX_SUBMISSION_ROWS = 100
 export const MAX_QA_ANSWER_LENGTH = 100
 export const MAX_TRAKE_EVENT_COUNT = 20
 export const DEFAULT_QUERY_NAME = 'query-1-kis'
-export const TEAM_SUBMISSION_VERSION = 2
+export const TEAM_SUBMISSION_VERSION = 3
 export const DEFAULT_TEAM_QUERY_COUNT = 25
+export const MAX_PACKAGE_QUERY_COUNT = 50
+export const DEFAULT_FILENAME_TEMPLATE = 'query-{n}-{type}'
 
 export interface CandidateSource {
   resultId?: string
@@ -78,6 +80,8 @@ export interface PackageQuery {
 
 export interface TeamSubmissionPackage {
   version: typeof TEAM_SUBMISSION_VERSION
+  queryCount: number
+  filenameTemplate: string
   activeQueryId: string | null
   queries: PackageQuery[]
 }
@@ -196,6 +200,10 @@ export function queryTypeSuffix(type: SubmissionQueryType) {
   return type === 'QA' ? 'qa' : type.toLowerCase()
 }
 
+export function displaySubmissionQueryType(type: SubmissionQueryType) {
+  return type === 'QA' ? 'Q&A' : type
+}
+
 export function normalizeSubmissionVideoId(value: unknown) {
   return String(value ?? '').trim().replace(/\.mp4$/i, '')
 }
@@ -204,12 +212,62 @@ export function packageQueryId(queryNumber: number) {
   return `query-${queryNumber}`
 }
 
-export function filenameForPackageQuery(query: Pick<PackageQuery, 'queryNumber' | 'type'>) {
-  return `query-${query.queryNumber}-${queryTypeSuffix(query.type)}.csv`
+export function normalizeFilenameTemplate(input: unknown) {
+  return String(input ?? DEFAULT_FILENAME_TEMPLATE)
+    .trim()
+    .replace(/\.csv$/i, '')
+}
+
+export function validateFilenameTemplate(input: unknown) {
+  const template = normalizeFilenameTemplate(input)
+  const errors: string[] = []
+
+  if (!template) {
+    errors.push('Filename format is required.')
+  }
+  if (!template.includes('{n}') || !template.includes('{type}')) {
+    errors.push('Filename format must include {n} and {type}.')
+  }
+  if (/[\\/]/.test(template) || template.includes('..')) {
+    errors.push('Filename format must not contain path separators or ..')
+  }
+  if (/[<>:"|?*\u0000-\u001F]/.test(template)) {
+    errors.push('Filename format contains unsafe filename characters.')
+  }
+
+  return {
+    template,
+    errors,
+    valid: errors.length === 0,
+  }
+}
+
+export function clampTeamQueryCount(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_TEAM_QUERY_COUNT
+  return Math.max(1, Math.min(MAX_PACKAGE_QUERY_COUNT, Math.floor(numeric)))
+}
+
+export function renderPackageQueryBasename(
+  query: Pick<PackageQuery, 'queryNumber' | 'type'>,
+  filenameTemplate = DEFAULT_FILENAME_TEMPLATE,
+) {
+  const validation = validateFilenameTemplate(filenameTemplate)
+  const template = validation.valid ? validation.template : DEFAULT_FILENAME_TEMPLATE
+  return template
+    .replace(/\{n\}/g, String(query.queryNumber))
+    .replace(/\{type\}/g, queryTypeSuffix(query.type))
+}
+
+export function filenameForPackageQuery(
+  query: Pick<PackageQuery, 'queryNumber' | 'type'>,
+  filenameTemplate = DEFAULT_FILENAME_TEMPLATE,
+) {
+  return `${renderPackageQueryBasename(query, filenameTemplate)}.csv`
 }
 
 export function createEmptySubmissionPackage(queryCount = DEFAULT_TEAM_QUERY_COUNT): TeamSubmissionPackage {
-  const safeCount = Math.max(1, Math.floor(queryCount))
+  const safeCount = clampTeamQueryCount(queryCount)
   const queries = Array.from({ length: safeCount }, (_, index): PackageQuery => {
     const queryNumber = index + 1
     return {
@@ -225,8 +283,91 @@ export function createEmptySubmissionPackage(queryCount = DEFAULT_TEAM_QUERY_COU
 
   return {
     version: TEAM_SUBMISSION_VERSION,
+    queryCount: safeCount,
+    filenameTemplate: DEFAULT_FILENAME_TEMPLATE,
     activeQueryId: queries[0]?.id ?? null,
     queries,
+  }
+}
+
+export function packageQueryHasData(query: PackageQuery) {
+  return query.candidates.length > 0 || Boolean(query.notes?.trim()) || query.reviewed
+}
+
+export function queryPlanFromPackage(teamPackage: TeamSubmissionPackage): PackageSetupQueryPlan[] {
+  return Array.from({ length: clampTeamQueryCount(teamPackage.queryCount) }, (_, index) => {
+    const queryNumber = index + 1
+    const query = getPackageQueryByNumber(teamPackage, queryNumber)
+    return {
+      queryNumber,
+      type: query?.type ?? 'KIS',
+      expectedEventCount: query?.type === 'TRAKE' ? query.expectedEventCount : undefined,
+    }
+  })
+}
+
+export function configureTeamSubmissionPackage(
+  teamPackage: TeamSubmissionPackage,
+  config: PackageSetupConfig,
+): TeamSubmissionPackage {
+  const queryCount = clampTeamQueryCount(config.queryCount)
+  const template = validateFilenameTemplate(config.filenameTemplate).template || DEFAULT_FILENAME_TEMPLATE
+  const currentByNumber = new Map(teamPackage.queries.map((query) => [query.queryNumber, query]))
+  const planByNumber = new Map(config.queryPlan.map((plan) => [plan.queryNumber, plan]))
+
+  const queries = Array.from({ length: queryCount }, (_, index): PackageQuery => {
+    const queryNumber = index + 1
+    const existing = currentByNumber.get(queryNumber)
+    const plan = planByNumber.get(queryNumber)
+    const type = plan?.type ?? existing?.type ?? 'KIS'
+    const expectedEventCount = type === 'TRAKE' ? plan?.expectedEventCount ?? existing?.expectedEventCount : undefined
+
+    if (existing && existing.type === type) {
+      return {
+        ...existing,
+        type,
+        expectedEventCount,
+      }
+    }
+
+    return {
+      id: packageQueryId(queryNumber),
+      queryNumber,
+      type,
+      candidates: [],
+      reviewed: false,
+      notes: '',
+      expectedEventCount,
+      updatedAt: existing ? Date.now() : 0,
+    }
+  })
+
+  const activeQueryId = queries.some((query) => query.id === teamPackage.activeQueryId)
+    ? teamPackage.activeQueryId
+    : queries[0]?.id ?? null
+
+  return {
+    version: TEAM_SUBMISSION_VERSION,
+    queryCount,
+    filenameTemplate: template,
+    activeQueryId,
+    queries,
+  }
+}
+
+export function resetTeamSubmissionPackageAnswers(teamPackage: TeamSubmissionPackage): TeamSubmissionPackage {
+  return {
+    ...teamPackage,
+    queries: teamPackage.queries.map((query) => ({
+      id: query.id,
+      queryNumber: query.queryNumber,
+      type: query.type,
+      candidates: [],
+      reviewed: false,
+      notes: '',
+      expectedEventCount: query.type === 'TRAKE' ? query.expectedEventCount : undefined,
+      updatedAt: 0,
+    })),
   }
 }
 
@@ -238,8 +379,11 @@ export function getPackageQueryByNumber(teamPackage: TeamSubmissionPackage, quer
   return teamPackage.queries.find((query) => query.queryNumber === queryNumber) ?? null
 }
 
-export function getPackageQueryFilename(query: Pick<PackageQuery, 'queryNumber' | 'type'>) {
-  return filenameForPackageQuery(query)
+export function getPackageQueryFilename(
+  query: Pick<PackageQuery, 'queryNumber' | 'type'>,
+  filenameTemplate = DEFAULT_FILENAME_TEMPLATE,
+) {
+  return filenameForPackageQuery(query, filenameTemplate)
 }
 
 export function getPackageQueryCandidateCount(query?: Pick<PackageQuery, 'candidates'> | null) {
@@ -511,10 +655,13 @@ export function serializePackageQuery(query: PackageQuery) {
   return rows.join('\n')
 }
 
-export function validatePackageQuery(query: PackageQuery): QueryValidationResult {
+export function validatePackageQuery(
+  query: PackageQuery,
+  filenameTemplate = DEFAULT_FILENAME_TEMPLATE,
+): QueryValidationResult {
   const errors: QueryValidationIssue[] = []
   const warnings: QueryValidationIssue[] = []
-  const filename = filenameForPackageQuery(query)
+  const filename = filenameForPackageQuery(query, filenameTemplate)
   const seen = new Map<string, number>()
   const expectedTrakeEventCount = isValidTrakeExpectedEventCount(query.expectedEventCount)
     ? query.expectedEventCount
@@ -637,13 +784,19 @@ export function validatePackageQuery(query: PackageQuery): QueryValidationResult
 
 export function validateTeamSubmissionPackage(
   teamPackage: TeamSubmissionPackage,
-  expectedQueryCount = DEFAULT_TEAM_QUERY_COUNT,
 ): PackageValidationResult {
   const packageErrors: QueryValidationIssue[] = []
   const packageWarnings: QueryValidationIssue[] = []
-  const queries = teamPackage.queries.map(validatePackageQuery)
+  const expectedQueryCount = clampTeamQueryCount(teamPackage.queryCount)
+  const templateValidation = validateFilenameTemplate(teamPackage.filenameTemplate)
+  const filenameTemplate = templateValidation.valid ? templateValidation.template : DEFAULT_FILENAME_TEMPLATE
+  const queries = teamPackage.queries.map((query) => validatePackageQuery(query, filenameTemplate))
   const queryNumbers = new Map<number, number>()
   const filenames = new Map<string, number>()
+
+  for (const error of templateValidation.errors) {
+    packageErrors.push(queryIssue('error', 'filename-template-invalid', error))
+  }
 
   if (teamPackage.queries.length !== expectedQueryCount) {
     packageErrors.push(queryIssue(
@@ -663,7 +816,7 @@ export function validateTeamSubmissionPackage(
     }
 
     queryNumbers.set(query.queryNumber, (queryNumbers.get(query.queryNumber) ?? 0) + 1)
-    const filename = filenameForPackageQuery(query)
+    const filename = filenameForPackageQuery(query, filenameTemplate)
     filenames.set(filename, (filenames.get(filename) ?? 0) + 1)
   }
 
@@ -690,7 +843,7 @@ export function validateTeamSubmissionPackage(
   const unansweredCount = queries.filter((query) => query.status === 'UNANSWERED').length
 
   return {
-    totalQueries: teamPackage.queries.length,
+    totalQueries: expectedQueryCount,
     readyCount,
     errorCount,
     unansweredCount,
@@ -724,9 +877,6 @@ function assertFinalSubmissionFiles(files: TeamSubmissionZipFile[], expectedQuer
     if (!file.filename.endsWith('.csv')) {
       errors.push(`${file.filename}: generated filename must end with .csv.`)
     }
-    if (!/^query-\d+-(kis|qa|trake)\.csv$/i.test(file.filename)) {
-      errors.push(`${file.filename}: generated filename is not canonical.`)
-    }
     if (filenames.has(file.filename)) {
       errors.push(`${file.filename}: duplicate generated filename.`)
     }
@@ -747,9 +897,9 @@ function assertFinalSubmissionFiles(files: TeamSubmissionZipFile[], expectedQuer
 
 export function buildTeamSubmissionFiles(
   teamPackage: TeamSubmissionPackage,
-  expectedQueryCount = DEFAULT_TEAM_QUERY_COUNT,
 ) {
-  const validation = validateTeamSubmissionPackage(teamPackage, expectedQueryCount)
+  const expectedQueryCount = clampTeamQueryCount(teamPackage.queryCount)
+  const validation = validateTeamSubmissionPackage(teamPackage)
   if (!validation.canProceedToFinalExport) {
     throw new Error('Cannot export submission. Fix all validation errors first.')
   }
@@ -758,9 +908,10 @@ export function buildTeamSubmissionFiles(
     .sort((a, b) => a.queryNumber - b.queryNumber)
     .map((query): TeamSubmissionZipFile => {
       const csv = serializePackageQuery(query)
+      const filename = filenameForPackageQuery(query, teamPackage.filenameTemplate)
       return {
-        filename: filenameForPackageQuery(query),
-        internalPath: `submission/${filenameForPackageQuery(query)}`,
+        filename,
+        internalPath: `submission/${filename}`,
         queryNumber: query.queryNumber,
         queryType: query.type,
         csv,
@@ -774,14 +925,13 @@ export function buildTeamSubmissionFiles(
 
 export function createTeamSubmissionZip(
   teamPackage: TeamSubmissionPackage,
-  expectedQueryCount = DEFAULT_TEAM_QUERY_COUNT,
 ): TeamSubmissionZipResult {
-  const validation = validateTeamSubmissionPackage(teamPackage, expectedQueryCount)
+  const validation = validateTeamSubmissionPackage(teamPackage)
   if (!validation.canProceedToFinalExport) {
     throw new Error('Cannot export submission. Fix all validation errors first.')
   }
 
-  const files = buildTeamSubmissionFiles(teamPackage, expectedQueryCount)
+  const files = buildTeamSubmissionFiles(teamPackage)
   const zipInput: SubmissionPackageFile[] = files.map((file) => ({
     filename: file.filename,
     queryName: file.filename.replace(/\.csv$/i, ''),
@@ -843,6 +993,18 @@ export interface ParsedSubmissionFilename {
   errors: string[]
 }
 
+export interface PackageSetupQueryPlan {
+  queryNumber: number
+  type: SubmissionQueryType
+  expectedEventCount?: number
+}
+
+export interface PackageSetupConfig {
+  queryCount: number
+  filenameTemplate: string
+  queryPlan: PackageSetupQueryPlan[]
+}
+
 function pasteCandidateId(type: SubmissionQueryType, lineNumber: number, index: number) {
   const random = Math.random().toString(36).slice(2, 9)
   return `paste-${type.toLowerCase()}-${Date.now()}-${lineNumber}-${index}-${random}`
@@ -896,7 +1058,10 @@ function candidatePasteKey(candidate: QueryCandidate) {
   return `${candidate.videoId}:${candidate.frameOrder}`
 }
 
-export function parseSubmissionFilename(filename: string, queryCount = DEFAULT_TEAM_QUERY_COUNT): ParsedSubmissionFilename {
+export function parseSubmissionFilename(
+  filename: string,
+  teamPackage: Pick<TeamSubmissionPackage, 'queryCount' | 'filenameTemplate' | 'queries'> = createEmptySubmissionPackage(DEFAULT_TEAM_QUERY_COUNT),
+): ParsedSubmissionFilename {
   const trimmed = filename.trim()
   const errors: string[] = []
   if (!/\.csv$/i.test(trimmed)) {
@@ -904,25 +1069,24 @@ export function parseSubmissionFilename(filename: string, queryCount = DEFAULT_T
     return { filename: trimmed, errors }
   }
 
-  const match = trimmed.match(/^query-(\d+)-(kis|qa|trake)\.csv$/i)
-  if (!match) {
-    errors.push('Filename must match query-N-kis.csv, query-N-qa.csv, or query-N-trake.csv.')
+  const expectedByFilename = new Map(
+    teamPackage.queries.map((query) => [
+      filenameForPackageQuery(query, teamPackage.filenameTemplate).toLowerCase(),
+      query,
+    ]),
+  )
+  const matchedQuery = expectedByFilename.get(trimmed.toLowerCase())
+  if (!matchedQuery) {
+    errors.push('Filename does not match the current package setup.')
     return { filename: trimmed, errors }
   }
 
-  const queryNumber = Number(match[1])
-  if (!Number.isInteger(queryNumber) || queryNumber < 1 || queryNumber > queryCount) {
-    errors.push(`Query number must be between 1 and ${queryCount}.`)
+  return {
+    filename: trimmed,
+    queryNumber: matchedQuery.queryNumber,
+    type: matchedQuery.type,
+    errors,
   }
-
-  const suffix = match[2].toLowerCase()
-  const type: SubmissionQueryType = suffix === 'qa'
-    ? 'QA'
-    : suffix === 'trake'
-      ? 'TRAKE'
-      : 'KIS'
-
-  return { filename: trimmed, queryNumber, type, errors }
 }
 
 export function parseSubmissionRow(row: string): ParsedSubmissionCsvRow {

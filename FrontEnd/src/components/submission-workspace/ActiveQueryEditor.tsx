@@ -19,6 +19,7 @@ import type { CandidateMoveDirection } from './candidateEditorUtils'
 
 type ActiveQueryEditorProps = {
   query: PackageQuery | null
+  filenameTemplate: string
   onAddCandidate: (queryId: string, candidate: QueryCandidate) => void
   onUpdateCandidate: (queryId: string, candidateId: string, patch: QueryCandidatePatch) => void
   onRemoveCandidate: (queryId: string, candidateId: string) => void
@@ -43,6 +44,7 @@ function candidateIndex(query: PackageQuery, candidateId: string) {
 
 export default function ActiveQueryEditor({
   query,
+  filenameTemplate,
   onAddCandidate,
   onUpdateCandidate,
   onRemoveCandidate,
@@ -65,7 +67,7 @@ export default function ActiveQueryEditor({
     )
   }
 
-  const queryName = filenameForPackageQuery(query).replace(/\.csv$/i, '')
+  const queryName = filenameForPackageQuery(query, filenameTemplate).replace(/\.csv$/i, '')
   const candidateCount = getPackageQueryCandidateCount(query)
   const kisCandidates = query.candidates.filter((candidate): candidate is KisCandidate => candidate.type === 'KIS')
   const qaCandidates = query.candidates.filter((candidate): candidate is QaCandidate => candidate.type === 'QA')
@@ -213,6 +215,7 @@ export default function ActiveQueryEditor({
       {pasteOpen && (
         <PasteAnswersDialog
           query={query}
+          filenameTemplate={filenameTemplate}
           onClose={() => setPasteOpen(false)}
           onApply={onAddCandidates}
           onNotify={onNotify}

@@ -11,6 +11,7 @@ import CandidateImportReview from './CandidateImportReview'
 
 type PasteAnswersDialogProps = {
   query: PackageQuery
+  filenameTemplate: string
   onClose: () => void
   onApply: (queryId: string, candidates: QueryCandidate[]) => number
   onNotify: (message: string, type?: 'success' | 'error' | 'info') => void
@@ -22,13 +23,14 @@ function displayType(type: PackageQuery['type']) {
 
 export default function PasteAnswersDialog({
   query,
+  filenameTemplate,
   onClose,
   onApply,
   onNotify,
 }: PasteAnswersDialogProps) {
   const [text, setText] = useState('')
   const [result, setResult] = useState<ParsedPasteResult | null>(null)
-  const queryName = filenameForPackageQuery(query).replace(/\.csv$/i, '')
+  const queryName = filenameForPackageQuery(query, filenameTemplate).replace(/\.csv$/i, '')
   const eligibleCount = result?.eligibleCandidates.length ?? 0
   const errorCount = result?.rows.filter((row) => row.status === 'ERROR').length ?? 0
   const duplicateCount = result?.rows.filter((row) => row.status === 'DUPLICATE').length ?? 0

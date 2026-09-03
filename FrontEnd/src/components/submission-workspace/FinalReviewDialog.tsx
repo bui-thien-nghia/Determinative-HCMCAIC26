@@ -23,6 +23,7 @@ type FinalReviewDialogProps = {
   onClose: () => void
   onEditQuery: (queryId: string) => void
   onNotify: (message: string, type?: 'success' | 'error' | 'info') => void
+  onSyncLatest: () => Promise<TeamSubmissionPackage | null>
 }
 
 function displayType(type: PackageQuery['type']) {
@@ -105,6 +106,7 @@ export default function FinalReviewDialog({
   onClose,
   onEditQuery,
   onNotify,
+  onSyncLatest,
 }: FinalReviewDialogProps) {
   const firstProblemQuery = validation.queries.find((query) => query.status === 'ERROR')
     ?? validation.queries.find((query) => query.status === 'UNANSWERED')
@@ -136,18 +138,27 @@ export default function FinalReviewDialog({
     ? 'Fix all validation errors before final submission.'
     : validation.unansweredCount > 0
       ? 'Add at least one candidate to every query before final submission.'
-      : 'All 25 queries are answered and structurally valid.'
+      : `All ${teamPackage.queryCount} queries are answered and structurally valid.`
   const canDownload = validation.canProceedToFinalExport
 
-  const handleDownloadSubmission = () => {
-    const currentValidation = validateTeamSubmissionPackage(teamPackage)
+  const [syncingLatest, setSyncingLatest] = useState(false)
+
+  const handleDownloadSubmission = async () => {
+    setSyncingLatest(true)
+    const latestPackage = await onSyncLatest()
+    setSyncingLatest(false)
+    if (!latestPackage) {
+      onNotify('Could not confirm the latest shared room state. Export was cancelled.', 'error')
+      return
+    }
+    const currentValidation = validateTeamSubmissionPackage(latestPackage)
     if (!currentValidation.canProceedToFinalExport) {
       onNotify('Cannot export submission. Fix all validation errors first.', 'error')
       return
     }
 
     try {
-      const result = createTeamSubmissionZip(teamPackage)
+      const result = createTeamSubmissionZip(latestPackage)
       downloadBlob(result.blob, 'submission.zip')
       onNotify(`submission.zip generated successfully. ${result.files.length} query CSV files.`, 'success')
     } catch (error) {
@@ -169,7 +180,7 @@ export default function FinalReviewDialog({
               Final Submission Review
             </div>
             <div className="mt-1 text-[10px] text-slate-500">
-              Check the 25-query team package before downloading submission.zip.
+              Check the {teamPackage.queryCount}-query team package before downloading submission.zip.
             </div>
           </div>
           <button
@@ -307,13 +318,13 @@ export default function FinalReviewDialog({
             </button>
             <button
               type="button"
-              onClick={handleDownloadSubmission}
-              disabled={!canDownload}
+              onClick={() => void handleDownloadSubmission()}
+              disabled={!canDownload || syncingLatest}
               title={canDownload ? 'Download submission.zip' : 'Fix all validation errors before export'}
               className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-[10px] font-bold uppercase text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Download size={12} />
-              Download Submission.zip
+              {syncingLatest ? 'Syncing Latest Room…' : 'Download Submission.zip'}
             </button>
           </div>
         </div>

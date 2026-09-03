@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Archive, Check, Download, FilePlus2, PackageCheck, Trash } from 'lucide-react'
 import { getSearchResultFilterSummary, useStore } from '../store'
 
@@ -8,8 +8,10 @@ import TRAKEBuilder from './answer-builder/TRAKEBuilder'
 import ActiveQueryEditor from './submission-workspace/ActiveQueryEditor'
 import CsvImportDialog from './submission-workspace/CsvImportDialog'
 import FinalReviewDialog from './submission-workspace/FinalReviewDialog'
+import PackageSetupDialog from './submission-workspace/PackageSetupDialog'
 import PackageQueryTable from './submission-workspace/PackageQueryTable'
 import PackageSummary from './submission-workspace/PackageSummary'
+import TeamRoomPanel from './submission-workspace/TeamRoomPanel'
 import {
   MAX_SUBMISSION_ROWS,
   createSubmissionZip,
@@ -65,11 +67,18 @@ export default function RecheckPanel() {
     removePackageQueryCandidate,
     reorderPackageQueryCandidates,
     setPackageQueryExpectedEventCount,
+    applyTeamPackageSetup,
     resetTeamSubmissionPackage,
+    roomSession,
+    resumeTeamRoom,
+    pauseTeamRoom,
+    syncTeamRoomNow,
   } = useStore()
   const [isDragOver, setIsDragOver] = useState(false)
   const [finalReviewOpen, setFinalReviewOpen] = useState(false)
   const [csvImportOpen, setCsvImportOpen] = useState(false)
+  const [packageSetupOpen, setPackageSetupOpen] = useState(false)
+  const [packageSetupBase, setPackageSetupBase] = useState<{ roomRevision: number; configRevision: number } | undefined>()
   const queryType = mode as SubmissionQueryType
   const activePackageQuery = getActivePackageQuery(teamSubmissionPackage)
   const filename = filenameForQuery(submissionQueryName, queryType)
@@ -87,7 +96,11 @@ export default function RecheckPanel() {
     () => getSearchResultFilterSummary(searchResults, filterValues),
     [filterValues, searchResults],
   )
-  const visibleResults = filterSummary.results
+
+  useEffect(() => {
+    resumeTeamRoom()
+    return pauseTeamRoom
+  }, [pauseTeamRoom, resumeTeamRoom])
 
   const handleTypeChange = (nextType: SubmissionQueryType) => {
     setMode(nextType)
@@ -156,10 +169,19 @@ export default function RecheckPanel() {
     addToast('Submission package cleared', 'info')
   }
 
-  const handleResetTeamPackage = () => {
-    if (!window.confirm('Reset all 25 query slots and remove all package candidates/review flags?')) return
-    resetTeamSubmissionPackage()
-    addToast('Team answer package reset', 'info')
+  const handleResetTeamPackage = async () => {
+    const scope = roomSession.connected ? ' This will clear answers for everyone in this room.' : ''
+    if (!window.confirm(`Reset all ${teamSubmissionPackage.queryCount} queries and clear current answers? Package setup will be preserved.${scope}`)) return
+    if (await resetTeamSubmissionPackage()) addToast('Team answer package reset', 'info')
+  }
+
+  const handleOpenFinalReview = async () => {
+    if (roomSession.connected) {
+      addToast('Syncing latest room state…', 'info')
+      const synced = await syncTeamRoomNow()
+      if (!synced) addToast('Room is offline or conflicted. Validation will use the local snapshot.', 'info')
+    }
+    setFinalReviewOpen(true)
   }
 
   const handleBulkAdd = (count: number | 'all') => {
@@ -170,8 +192,8 @@ export default function RecheckPanel() {
       return
     }
 
-    const requested = count === 'all' ? visibleResults.length : count
-    const candidates = visibleResults.slice(0, Math.min(requested, available))
+    const requested = count === 'all' ? searchResults.length : count
+    const candidates = searchResults.slice(0, Math.min(requested, available))
     if (candidates.length === 0) {
       addToast('No search results to add', 'error')
       return
@@ -228,6 +250,19 @@ export default function RecheckPanel() {
             <div className="text-[10px] text-slate-500 mt-0.5">Package-level query slots</div>
           </div>
           <div className="grid grid-cols-2 gap-1.5">
+            <div className="col-span-2"><TeamRoomPanel /></div>
+            <button
+              type="button"
+              onClick={() => {
+                setPackageSetupBase(roomSession.connected
+                  ? { roomRevision: roomSession.roomRevision, configRevision: roomSession.configRevision }
+                  : undefined)
+                setPackageSetupOpen(true)
+              }}
+              className="col-span-2 rounded border border-blue-700/60 bg-blue-950/20 px-2 py-1.5 text-[9px] font-bold uppercase tracking-wider text-blue-200 transition-colors hover:bg-blue-900/35"
+            >
+              Package Setup
+            </button>
             <button
               type="button"
               onClick={() => setCsvImportOpen(true)}
@@ -237,17 +272,17 @@ export default function RecheckPanel() {
             </button>
             <button
               type="button"
-              onClick={() => setFinalReviewOpen(true)}
+              onClick={() => void handleOpenFinalReview()}
               className="rounded bg-blue-600 px-2 py-1.5 text-[9px] font-bold uppercase tracking-wider text-white transition-colors hover:bg-blue-500"
             >
               Validate All
             </button>
             <button
               type="button"
-              onClick={handleResetTeamPackage}
+              onClick={() => void handleResetTeamPackage()}
               className="col-span-2 rounded border border-red-900/40 bg-red-950/20 px-2 py-1 text-[9px] font-semibold uppercase tracking-wider text-red-300 transition-colors hover:bg-red-900/40 hover:text-red-100"
             >
-              Reset 25
+              Reset Package
             </button>
           </div>
         </div>
@@ -256,6 +291,7 @@ export default function RecheckPanel() {
         <PackageQueryTable
           teamPackage={teamSubmissionPackage}
           validation={packageValidation}
+          members={roomSession.members.filter((member) => member.clientId !== roomSession.clientId)}
           onSelectQuery={setActivePackageQuery}
           onChangeType={setPackageQueryType}
         />
@@ -263,6 +299,7 @@ export default function RecheckPanel() {
 
       <ActiveQueryEditor
         query={activePackageQuery}
+        filenameTemplate={teamSubmissionPackage.filenameTemplate}
         onAddCandidate={addPackageQueryCandidate}
         onAddCandidates={addPackageQueryCandidates}
         onUpdateCandidate={updatePackageQueryCandidate}
@@ -281,7 +318,7 @@ export default function RecheckPanel() {
           <div>
             <h2 className="font-bold text-slate-100 tracking-wide text-xs uppercase">Legacy Active Workspace</h2>
             <div className="text-[10px] text-slate-500 mt-0.5">
-              Compatibility path only. Legacy export does not use the 25-query Team Answer Workspace.
+              Compatibility path only. Legacy export does not use the configured Team Answer Workspace.
             </div>
           </div>
 
@@ -317,7 +354,7 @@ export default function RecheckPanel() {
                 <span>Rows: {rowsUsed} / {MAX_SUBMISSION_ROWS}</span>
                 <span>
                   {filterSummary.activeFilterCount > 0
-                    ? `${visibleResults.length} / ${searchResults.length} result(s) visible`
+                    ? `${searchResults.length} filtered result(s) available`
                     : `${searchResults.length} result(s) available`}
                 </span>
               </div>
@@ -331,7 +368,7 @@ export default function RecheckPanel() {
                   <button
                     key={label}
                     onClick={() => handleBulkAdd(count as number | 'all')}
-                    disabled={visibleResults.length === 0 || rowsUsed >= MAX_SUBMISSION_ROWS}
+                    disabled={searchResults.length === 0 || rowsUsed >= MAX_SUBMISSION_ROWS}
                     className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-1.5 py-1 rounded text-[9px] font-semibold uppercase border border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {label}
@@ -472,15 +509,36 @@ export default function RecheckPanel() {
             setFinalReviewOpen(false)
           }}
           onNotify={addToast}
+          onSyncLatest={async () => {
+            if (!useStore.getState().roomSession.connected) return useStore.getState().teamSubmissionPackage
+            addToast('Syncing latest room state…', 'info')
+            if (!await syncTeamRoomNow()) return null
+            addToast('Room package is up to date', 'success')
+            return useStore.getState().teamSubmissionPackage
+          }}
         />
       )}
 
       {csvImportOpen && activePackageQuery && (
         <CsvImportDialog
           activeQuery={activePackageQuery}
+          teamPackage={teamSubmissionPackage}
           onClose={() => setCsvImportOpen(false)}
           onApply={addPackageQueryCandidates}
           onNotify={addToast}
+        />
+      )}
+
+      {packageSetupOpen && (
+        <PackageSetupDialog
+          teamPackage={teamSubmissionPackage}
+          onClose={() => setPackageSetupOpen(false)}
+          onApply={async (config) => {
+            if (await applyTeamPackageSetup(config, packageSetupBase)) {
+              setPackageSetupOpen(false)
+              addToast('Package setup applied', 'success')
+            }
+          }}
         />
       )}
     </div>

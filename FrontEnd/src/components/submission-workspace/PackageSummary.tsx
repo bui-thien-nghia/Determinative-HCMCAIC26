@@ -6,7 +6,7 @@ type PackageSummaryProps = {
 }
 
 export default function PackageSummary({ teamPackage, validation }: PackageSummaryProps) {
-  const total = teamPackage.queries.length
+  const total = teamPackage.queryCount
 
   return (
     <div className="grid grid-cols-2 gap-2">
