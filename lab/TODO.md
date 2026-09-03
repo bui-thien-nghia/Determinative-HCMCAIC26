@@ -1,0 +1,3 @@
+- Tune keyframe extraction
+- Fix transcript segmentation
+- Rewrite aggregation

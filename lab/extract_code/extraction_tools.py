@@ -1,7 +1,10 @@
 import csv
 import json
+import cv2
 import numpy as np
 import pandas as pd
+import subprocess
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from sklearn.cluster import AgglomerativeClustering
@@ -12,49 +15,123 @@ from tqdm import tqdm
 class KeyframeAndFeatureExtractor:
     def __init__(
         self,
-        shot_extraction_model: ExtractionModel,
-        perceptive_feature_extraction_model: ExtractionModel,
-        fused_feature_extraction_model: ExtractionModel,
+        feature_extraction_model: ExtractionModel,
         save_dir="."
     ):
-        self.shot_extraction_model = shot_extraction_model
-        self.perceptive_feature_extraction_model = perceptive_feature_extraction_model
-        self.fused_feature_extraction_model = fused_feature_extraction_model
+        self.feature_extraction_model = feature_extraction_model
         self.save_dir = Path(save_dir)
         self.img_dir = self.save_dir / "imgs"
         self.map_dir = self.save_dir / "maps"
-        self.feat_siglip2_dense_dir = self.save_dir / "feats" / "siglip2_dense"
-        self.feat_beit3_dense_dir = self.save_dir / "feats" / "beit3_dense"
+        self.feat_dir = self.save_dir / "feats" / "siglip2_dense"
 
-        self.shot_extraction_model.load()
-        self.perceptive_feature_extraction_model.load()
-        self.fused_feature_extraction_model.load()
+        self.feature_extraction_model.load()
 
+
+    def extract_keyframes_ffmpeg(
+        self,
+        vid_path: str,
+        shot_confidence_score: float = 0.1,
+        min_keyframe_distance: float = 2
+    ):
+        select_str = f"select='isnan(prev_selected_t)+gt(scene,{shot_confidence_score})*gte(t-prev_selected_t,{min_keyframe_distance})',showinfo"
+        cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-threads", "4",
+                "-i", vid_path,
+                "-v", "info",
+                "-skip_frame", "nokey",
+                "-vf", select_str,
+                "-vsync", "vfr",
+                "-f", "rawvideo",
+                "-pix_fmt", "rgb24",
+                "-",
+            ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        if result.returncode:
+            print(f"Error: {stderr}")
+            return [], []
+
+        stream_match = re.search(r"Stream #.* Video:.*", stderr)
+        if not stream_match: return [], []  
+        stream_line = stream_match.group(0)
+        fps_match = re.search(r"([\d\.]+)\s+fps", stream_line) or re.search(r"([\d\.]+)\s+tbr", stream_line)
+        res_match = re.search(r"(\d{2,5})x(\d{2,5})", stream_line)
+
+        fps = float(fps_match.group(1)) if fps_match else 0.0
+        width = int(res_match.group(1)) if res_match else None
+        height = int(res_match.group(2)) if res_match else None
+        time_orders = [float(t) for t in re.findall(r"pts_time:\s*([\d\.]+)", stderr)]
+        frame_orders = [time_order * fps for time_order in time_orders]
+        maps = [{
+            "vid_path": vid_path,
+            "frame_id": f"{(frame_id + 1):03d}",
+            "frame_order": frame_order,
+            "time_order": time_order,
+            "fps": fps,
+        } for frame_id, (frame_order, time_order) in enumerate(zip(frame_orders, time_orders))]
+
+        raw_frames = np.frombuffer(result.stdout, dtype=np.uint8)
+        imgs = raw_frames.reshape(-1, height, width, 3)
+
+        return imgs, maps
+
+
+    def extract_keyframes_cv2(self, vid_path: str, keyframe_time_distance: float = 3):
+        imgs, maps = [], []
+        cap = cv2.VideoCapture(vid_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_interval = int(round(fps * keyframe_time_distance))
+
+        frame_order = 0
+        frame_id = 1
+        while True:
+            if not frame_order % frame_interval:
+                ret, frame = cap.read()
+                if not ret: break
+                imgs.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                maps.append({
+                    "vid_path": vid_path,
+                    "frame_id": f"{frame_id:03d}",
+                    "frame_order": frame_order + 1,
+                    "time_order": frame_order / fps,
+                    "fps": fps
+                })
+                frame_id += 1
+            else:
+                ret = cap.grab()
+                if not ret: break
+
+            frame_order += 1
+
+        return imgs, maps
 
     def extract_keyframes_and_features(
         self,
-        vid_path,
-        confidence_threshold: float = 0.5,
-        perceptive_feature_extraction_batch_size: int = 32,
-        fused_feature_extraction_batch_size: int = 32
+        vid_path: str,
+        shot_confidence_score: float = 0.1,
+        min_keyframe_distance: float = 2,
+        feature_extraction_batch_size: int = 32,
     ):
-        imgs, maps = self.shot_extraction_model.run(vid_path, confidence_threshold)
-        for map in maps: map["vid_path"] = vid_path
+        imgs, maps = self.extract_keyframes_ffmpeg(
+            vid_path, 
+            shot_confidence_score=shot_confidence_score,
+            min_keyframe_distance=min_keyframe_distance
+        )
         
-        feats_siglip2_dense = self.perceptive_feature_extraction_model.run(imgs, batch_size=perceptive_feature_extraction_batch_size)
-        feats_beit3_dense = self.fused_feature_extraction_model.run(imgs, batch_size=fused_feature_extraction_batch_size)
-        return imgs, maps, feats_siglip2_dense, feats_beit3_dense
+        feats = self.feature_extraction_model.run(imgs, batch_size=feature_extraction_batch_size)
+        return imgs, maps, feats
 
 
     def filter_with_clustering(
         self,
         imgs: list,
         maps: list[dict],
-        feats_siglip2_dense: np.ndarray,
-        feats_beit3_dense: np.ndarray,
+        feats: np.ndarray,
         clustering_similarity_threshold: float = 0.9
     ):
-        similarity_matrix = cosine_similarity(feats_siglip2_dense)
+        similarity_matrix = cosine_similarity(feats)
         distance_matrix = np.clip(1 - similarity_matrix, 0, 1)
 
         distance_threshold = 1 - clustering_similarity_threshold
@@ -66,7 +143,7 @@ class KeyframeAndFeatureExtractor:
         )
         cluster_labels = clustering.fit_predict(distance_matrix)
 
-        unique_imgs, unique_maps, unique_feats_siglip2_dense, unique_feats_beit3_dense = [], [], [], []
+        unique_imgs, unique_maps, unique_feats = [], [], []
         n_clusters = len(np.unique(cluster_labels))
 
         best_idxes = []
@@ -75,7 +152,7 @@ class KeyframeAndFeatureExtractor:
             best_idx = idxes[0]
 
             if len(idxes) > 1:
-                cluster_feats = feats_siglip2_dense[idxes]
+                cluster_feats = feats[idxes]
                 cluster_centroid = np.mean(cluster_feats, axis=0)
                 centroid_similarities = cosine_similarity(cluster_feats, cluster_centroid.reshape(1, -1))
                 best_idx = idxes[np.argmax(centroid_similarities)]
@@ -85,37 +162,34 @@ class KeyframeAndFeatureExtractor:
         best_idxes = sorted(best_idxes)
         for i, best_idx in enumerate(best_idxes):
             unique_imgs.append(imgs[best_idx])
-            unique_feats_siglip2_dense.append(feats_siglip2_dense[best_idx])
-            unique_feats_beit3_dense.append(feats_beit3_dense[best_idx])
+            unique_feats.append(feats[best_idx])
 
             new_map = maps[best_idx]
             new_map["frame_id"] = f"{(i + 1):03d}"
             unique_maps.append(maps[best_idx])
 
-        return unique_imgs, unique_maps, unique_feats_siglip2_dense, unique_feats_beit3_dense
+        return unique_imgs, unique_maps, unique_feats
 
 
     def save_images_and_features(
         self,
         imgs: list,
         maps: list[dict],
-        feats_siglip2_dense: np.ndarray,
-        feats_beit3_dense: np.ndarray
+        feats: np.ndarray,
     ):
         csv_list = []
         header = []
         vid_id = ""
-        for img, map, feat_siglip2_dense, feat_beit3_dense in zip(imgs, maps, feats_siglip2_dense, feats_beit3_dense):
+        for img, map, feat in zip(imgs, maps, feats):
             vid_id = Path(map["vid_path"]).stem
             frame_id = map["frame_id"]
 
             (self.img_dir / vid_id).mkdir(parents=True, exist_ok=True)
-            (self.feat_siglip2_dense_dir / vid_id).mkdir(parents=True, exist_ok=True)
-            (self.feat_beit3_dense_dir / vid_id).mkdir(parents=True, exist_ok=True)
+            (self.feat_dir / vid_id).mkdir(parents=True, exist_ok=True)
 
+            if isinstance(img, (list, np.ndarray)): img = Image.fromarray(img)
             img.save(self.img_dir / vid_id / f"{frame_id}.jpg")
-            np.save(self.feat_siglip2_dense_dir / vid_id / f"{frame_id}.npy", feat_siglip2_dense)
-            np.save(self.feat_beit3_dense_dir / vid_id / f"{frame_id}.npy", feat_beit3_dense)
+            np.save(self.feat_dir / vid_id / f"{frame_id}.npy", feat)
             map.pop("vid_path", None)
             header = list(map.keys())
             csv_list.append(list(map.values()))
@@ -129,29 +203,28 @@ class KeyframeAndFeatureExtractor:
     def extract_and_save_keyframes(
         self,
         vid_paths: list[str],
-        perceptive_feature_extraction_batch_size: int = 32,
-        fused_feature_extraction_batch_size: int = 32,
-        shot_confidence_threshold: float = 0.5,
-        clustering_similarity_threshold: float = 0.9,
+        feature_extraction_batch_size: int = 32,
+        shot_confidence_score: float = 0.1,
+        min_keyframe_distance: float = 2,
+        clustering_similarity_threshold: float = 0.98,
         max_workers: int = 1
     ):
         self.img_dir.mkdir(parents=True, exist_ok=True)
         self.map_dir.mkdir(parents=True, exist_ok=True)
-        self.feat_siglip2_dense_dir.mkdir(parents=True, exist_ok=True)
-        self.feat_beit3_dense_dir.mkdir(parents=True, exist_ok=True)
+        self.feat_dir.mkdir(parents=True, exist_ok=True)
 
         def process_single_video(path):
-            imgs, maps, feats_siglip2_dense, feats_beit3_dense = self.extract_keyframes_and_features(
+            imgs, maps, feats = self.extract_keyframes_and_features(
                 path,
-                confidence_threshold=shot_confidence_threshold,
-                perceptive_feature_extraction_batch_size=perceptive_feature_extraction_batch_size,
-                fused_feature_extraction_batch_size=fused_feature_extraction_batch_size,
+                shot_confidence_score=shot_confidence_score,
+                min_keyframe_distance=min_keyframe_distance,
+                feature_extraction_batch_size=feature_extraction_batch_size,
             )
-            unique_imgs, unique_maps, unique_feats_siglip2_dense, unique_feats_beit3_dense = self.filter_with_clustering(
-                imgs, maps, feats_siglip2_dense, feats_beit3_dense,
+            unique_imgs, unique_maps, unique_feats = self.filter_with_clustering(
+                imgs, maps, feats,
                 clustering_similarity_threshold=clustering_similarity_threshold
             )
-            self.save_images_and_features(unique_imgs, unique_maps, unique_feats_siglip2_dense, unique_feats_beit3_dense)
+            self.save_images_and_features(unique_imgs, unique_maps, unique_feats)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for _ in tqdm(
@@ -187,10 +260,12 @@ class TranscriptAndFeatureProcessor:
             language: str = "",
             beam_size: int = 5,
             vad_filter: bool = True,
+            max_sentence_duration: float = 10.0
     ):
         tran_segments: list[dict] = []
         selected = []
         s, e = 0.0, 0.0
+
         tran_words = self.transcription_model.run(
             vid_path,
             batch_size=batch_size,
@@ -199,14 +274,35 @@ class TranscriptAndFeatureProcessor:
             vad_filter=vad_filter,
             word_timestamp=True
         )
+
+        # for word in tran_words:
+        #     e = word['end_time']
+        #     selected.append(word['text'])
+        #     if word['text'] and word['text'][-1] in [',', '.', '?', '!', ';']:
+        #         sentence = ' '.join(selected)
+        #         tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
+        #         selected = []
+        #         s = e
+        # if selected:
+        #     sentence = ' '.join(selected)
+        #     tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
+
+
         for word in tran_words:
+            if not selected:
+                s = word['start_time']
+
             e = word['end_time']
             selected.append(word['text'])
-            if word['text'] and word['text'][-1] in [',', '.', '?', '!', ';']:
+
+            is_punctuation = word['text'][-1] in [',', '.', '?', '!', ';']
+            is_too_long = (e - s) >= max_sentence_duration
+
+            if is_punctuation or is_too_long:
                 sentence = ' '.join(selected)
                 tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
                 selected = []
-                s = e
+
         if selected:
             sentence = ' '.join(selected)
             tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
@@ -236,8 +332,8 @@ class TranscriptAndFeatureProcessor:
 
                 selected = [
                     sentence['text'] for sentence in tran_segments
-                    if sentence['start_time'] >= lower_bound
-                    and sentence['end_time'] <= upper_bound
+                    if sentence['start_time'] <= upper_bound
+                    and sentence['end_time'] >= lower_bound
                 ]
                 tran_map[(vid_id, frame_id)] = ' '.join(selected)
 

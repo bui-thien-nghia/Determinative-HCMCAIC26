@@ -10,19 +10,14 @@ from .models import *
 from tqdm import tqdm
 
 class DataLoader:
-    def __init__(self, dataset_dir: str, database_client_url: str = "http://localhost:6334", vid_dir: str = "vids"):
+    def __init__(self, dataset_dir: str, database_client_url: str = "http://localhost:6333", vid_dir: str = "vids"):
         # Running setup
         self.dataset_dir = Path(dataset_dir)
         self.database_client = QdrantClient(url=database_client_url, prefer_grpc=True)
 
         # Schema
         self.feat_siglip2_dense_params = models.VectorParams(
-            size=1152,
-            distance=models.Distance.COSINE,
-            on_disk=True
-        )
-        self.feat_beit3_dense_params = models.VectorParams(
-            size=1024,
+            size=1536,
             distance=models.Distance.COSINE,
             on_disk=True
         )
@@ -148,7 +143,6 @@ class DataLoader:
             collection_name=collection_name,
             vectors_config={
                 'siglip2_dense': self.feat_siglip2_dense_params,
-                'beit3_dense': self.feat_beit3_dense_params,
                 'bgem3_dense': self.feat_bgem3_dense_params,
             },
             sparse_vectors_config={'bgem3_sparse': self.feat_bgem3_sparse_params},
@@ -186,7 +180,6 @@ class DataLoader:
                 id=str(uuid.uuid4()),
                 vector={
                     "siglip2_dense": feats["feat_siglip2_dense"].tolist(),
-                    "beit3_dense": feats["feat_beit3_dense"].tolist(),
                     "bgem3_dense": feats["feat_bgem3_dense"].tolist(),
                     "bgem3_sparse": models.SparseVector(
                         indices=feats["feat_bgem3_sparse_token_ids"].tolist(),
