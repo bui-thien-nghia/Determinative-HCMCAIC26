@@ -42,19 +42,18 @@ PYTHONPATH="$PWD:$PWD/BackEnd/src" \
 python BackEnd/API/manage.py migrate
 ```
 
-### E. Terminal 1 - Local Search Backend
+### E. Terminal 1 - Normal App
 
 ```sh
-PYTHONPATH="$PWD:$PWD/BackEnd/src" \
-python BackEnd/API/manage.py runserver 127.0.0.1:8000
+cd FrontEnd
+npm install
+npm run start:all
 ```
 
 ### F. Terminal 2 - Team Room Backend
 
 ```sh
-DJANGO_SETTINGS_MODULE=API.team_room_settings \
-PYTHONPATH="$PWD:$PWD/BackEnd/src" \
-python BackEnd/API/manage.py runserver 127.0.0.1:8100
+./scripts/start_team_room.sh
 ```
 
 ### G. Check Team Room
@@ -86,13 +85,7 @@ Create `FrontEnd/.env.local`:
 VITE_TEAM_ROOM_BACKEND_URL=https://your-host.xxxxx.ts.net
 ```
 
-### J. Terminal 4 - Frontend
-
-```sh
-cd FrontEnd
-npm install
-npm run dev
-```
+Restart Terminal 1 if this file changes.
 
 Open: http://localhost:5173
 
@@ -105,23 +98,21 @@ cd "C:\path\to\Team Repository"
 .\.venv\Scripts\Activate.ps1
 git checkout main
 git pull origin main
-$env:PYTHONPATH="$PWD;$PWD\BackEnd\src"
 python BackEnd\API\manage.py migrate
 ```
 
-Terminal 1 - Local Search Backend:
+Terminal 1 - Normal App:
 
 ```powershell
-$env:PYTHONPATH="$PWD;$PWD\BackEnd\src"
-python BackEnd\API\manage.py runserver 127.0.0.1:8000
+cd FrontEnd
+npm install
+npm run start:all
 ```
 
 Terminal 2 - Team Room Backend:
 
 ```powershell
-$env:DJANGO_SETTINGS_MODULE="API.team_room_settings"
-$env:PYTHONPATH="$PWD;$PWD\BackEnd\src"
-python BackEnd\API\manage.py runserver 127.0.0.1:8100
+.\scripts\start_team_room.ps1
 ```
 
 Check Team Room:
@@ -147,13 +138,7 @@ Create `FrontEnd\.env.local`:
 VITE_TEAM_ROOM_BACKEND_URL=https://your-host.xxxxx.ts.net
 ```
 
-Terminal 4 - Frontend:
-
-```powershell
-cd FrontEnd
-npm install
-npm run dev
-```
+Restart Terminal 1 if this file changes.
 
 Open: http://localhost:5173
 
@@ -166,8 +151,6 @@ cd "/path/to/Team Repository"
 source "/path/to/venv/bin/activate"
 git checkout main
 git pull origin main
-PYTHONPATH="$PWD:$PWD/BackEnd/src" \
-python BackEnd/API/manage.py runserver 127.0.0.1:8000
 ```
 
 Create `FrontEnd/.env.local`:
@@ -179,7 +162,7 @@ VITE_TEAM_ROOM_BACKEND_URL=https://<FUNNEL_URL_FROM_HOST>
 ```sh
 cd FrontEnd
 npm install
-npm run dev
+npm run start:all
 ```
 
 Open: http://localhost:5173
@@ -193,8 +176,6 @@ cd "C:\path\to\Team Repository"
 .\.venv\Scripts\Activate.ps1
 git checkout main
 git pull origin main
-$env:PYTHONPATH="$PWD;$PWD\BackEnd\src"
-python BackEnd\API\manage.py runserver 127.0.0.1:8000
 ```
 
 Create `FrontEnd\.env.local`:
@@ -206,7 +187,7 @@ VITE_TEAM_ROOM_BACKEND_URL=https://<FUNNEL_URL_FROM_HOST>
 ```powershell
 cd FrontEnd
 npm install
-npm run dev
+npm run start:all
 ```
 
 Open: http://localhost:5173
@@ -250,7 +231,7 @@ Stop Team Room Django `:8100` with Ctrl+C.
 | --- | --- |
 | Create Room fails | Check `:8100` health and `tailscale funnel status`. |
 | Team Room offline | Check `.env.local`, Funnel URL, then restart Vite. |
-| Changed `.env.local` but nothing changed | Restart `npm run dev`. |
+| Changed `.env.local` but nothing changed | Restart `npm run start:all`. |
 | Search does not work | Check local Django `:8000` and Qdrant. |
 | Funnel public `/api/search/` works | Stop Funnel immediately; Team Room isolation is wrong. |
 | Port already in use | Stop the old process before starting another server. |
