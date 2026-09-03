@@ -24,6 +24,12 @@ const safeIdPattern = /^[A-Za-z0-9_-]+$/
 const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
 const videoExtensions = new Set(['.mp4', '.webm', '.mov', '.mkv'])
 
+function normalizeProxyTarget(value: string | undefined, fallback: string) {
+  const trimmed = value?.trim()
+  if (!trimmed) return fallback
+  return trimmed.replace(/\/+$/, '')
+}
+
 type DatasetStatus = 'ready' | 'path_not_found' | 'no_permission' | 'images_missing' | 'videos_missing' | 'partial'
 
 interface DatasetValidation {
@@ -729,7 +735,7 @@ function aicMediaPlugin() {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, '')
-  const teamRoomBackendUrl = env.VITE_TEAM_ROOM_BACKEND_URL?.trim() || 'http://localhost:8000'
+  const teamRoomBackendUrl = normalizeProxyTarget(env.VITE_TEAM_ROOM_BACKEND_URL, 'http://localhost:8000')
 
   return {
     plugins: [react(), tailwindcss(), aicMediaPlugin()],
@@ -739,6 +745,7 @@ export default defineConfig(({ mode }) => {
         [teamRoomApiPrefix]: {
           target: teamRoomBackendUrl,
           changeOrigin: true,
+          secure: true,
           rewrite: (requestPath) => requestPath.replace(new RegExp(`^${teamRoomApiPrefix}`), ''),
         },
         '/api': {

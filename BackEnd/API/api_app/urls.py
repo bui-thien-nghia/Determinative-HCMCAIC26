@@ -7,7 +7,7 @@ from .views import (
     doFilter,
     getCollections,
 )
-from .team_room_views import createTeamRoom, getTeamRoom, heartbeatTeamRoom, updateTeamRoomConfig, updateTeamRoomQuery
+from .team_room_views import createTeamRoom, getTeamRoom, heartbeatTeamRoom, teamRoomHealth, updateTeamRoomConfig, updateTeamRoomQuery
 
 urlpatterns = [
     path('search/', Search, name = 'search'),
@@ -16,6 +16,7 @@ urlpatterns = [
     path('describeschema/', describeSchema, name = 'describeSchema'),
     path('continuoussearch/', continuousSearch, name = 'continuousSearch'),
     path('filter/', doFilter, name = 'filter'),
+    path('team-room/health/', teamRoomHealth, name='teamRoomHealth'),
     path('team-room/create/', createTeamRoom, name='teamRoomCreate'),
     path('team-room/<str:code>/', getTeamRoom, name='teamRoomDetail'),
     path('team-room/<str:code>/query/<int:query_number>/', updateTeamRoomQuery, name='teamRoomQueryUpdate'),

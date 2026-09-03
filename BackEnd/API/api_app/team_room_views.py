@@ -23,6 +23,11 @@ from .team_room_service import (
 MAX_TEAM_ROOM_REQUEST_BYTES = 2 * 1024 * 1024
 
 
+@api_view(['GET'])
+def teamRoomHealth(_request):
+    return Response({'status': 'ok', 'service': 'team-room'})
+
+
 def _room_or_none(code):
     normalized = normalize_room_code(code)
     if not normalized:

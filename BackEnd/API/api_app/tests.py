@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import Client, TestCase, override_settings
 from rest_framework.test import APIRequestFactory
 
 from .models import TeamRoom
@@ -41,6 +41,7 @@ def package(query_count=2):
 class TeamRoomApiTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
+        self.client = Client()
         response = createTeamRoom(self.factory.post(
             '/api/team-room/create/',
             {'displayName': 'Kent', 'package': package()},
@@ -48,6 +49,11 @@ class TeamRoomApiTests(TestCase):
         ))
         self.assertEqual(response.status_code, 201)
         self.code = response.data['roomCode']
+
+    def test_health_endpoint_is_available(self):
+        response = self.client.get('/api/team-room/health/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'status': 'ok', 'service': 'team-room'})
 
     def test_create_sanitizes_local_active_query_and_poll_is_revision_based(self):
         room = TeamRoom.objects.get(code=self.code)
@@ -166,3 +172,38 @@ class TeamRoomApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['members'][0]['activeQueryNumber'], 2)
         self.assertEqual(TeamRoom.objects.get(code=self.code).revision, before)
+
+
+@override_settings(ROOT_URLCONF='API.team_room_urls')
+class TeamRoomOnlyUrlConfTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+
+    def test_health_endpoint_is_available(self):
+        response = self.client.get('/api/team-room/health/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'status': 'ok', 'service': 'team-room'})
+
+    def test_team_room_routes_work(self):
+        response = self.client.post(
+            '/api/team-room/create/',
+            {'displayName': 'Kent', 'package': package()},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 201)
+        room_code = response.json()['roomCode']
+
+        detail = self.client.get(f'/api/team-room/{room_code}/')
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()['roomCode'], room_code)
+
+    def test_retrieval_routes_are_not_available(self):
+        for path in (
+            '/api/search/',
+            '/api/filter/',
+            '/api/continuoussearch/',
+            '/api/aggregatedsearch/',
+        ):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 404)
