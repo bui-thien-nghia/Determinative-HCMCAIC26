@@ -325,7 +325,7 @@ try {
 
     Push-Location $FrontendDir
     try {
-        npm run start:all
+        npm run start:retrieve
         exit $LASTEXITCODE
     } finally {
         Pop-Location

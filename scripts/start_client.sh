@@ -132,4 +132,4 @@ Managed independently by the local retrieval stack.
 READY
 
 cd "$FRONTEND_DIR"
-npm run start:all
+npm run start:retrieve

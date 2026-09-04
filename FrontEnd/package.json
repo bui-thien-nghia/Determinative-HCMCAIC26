@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "start:all": "concurrently \"npm run dev\" \"cd ../BackEnd/API && python manage.py runserver\""
+    "start:retrieve": "concurrently \"python ../BackEnd/API/manage.py runserver 8000\" \"npm run dev\""
   },
   "dependencies": {
     "@tailwindcss/vite": "latest",

@@ -284,4 +284,4 @@ $FUNNEL_URL
 READY
 
 cd "$FRONTEND_DIR"
-npm run start:all
+npm run start:retrieve
