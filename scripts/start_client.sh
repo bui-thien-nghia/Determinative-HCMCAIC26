@@ -45,50 +45,6 @@ http_status() {
   curl -sS -o /dev/null -w "%{http_code}" --max-time 5 "$1" || true
 }
 
-is_port_open() {
-  nc -z "$1" "$2" >/dev/null 2>&1
-}
-
-check_qdrant() {
-  echo "Checking local Qdrant..."
-  if [ "$(http_status "http://127.0.0.1:6333/collections")" = "200" ]; then
-    if is_port_open 127.0.0.1 6334; then
-      echo "Qdrant is available on 6333 and 6334."
-      return 0
-    fi
-  fi
-
-  if ! command -v docker >/dev/null 2>&1; then
-    error "Qdrant is not responding and docker was not found. Start your local Qdrant container and retry."
-    exit 1
-  fi
-
-  local container
-  container="$(docker ps -a --filter "name=^/aic-qdrant$" --format "{{.Names}}" 2>/dev/null || true)"
-  if [ "$container" != "aic-qdrant" ]; then
-    error "Qdrant is not available. Start your local Qdrant container and retry."
-    exit 1
-  fi
-
-  local running
-  running="$(docker inspect -f "{{.State.Running}}" aic-qdrant 2>/dev/null || true)"
-  if [ "$running" != "true" ]; then
-    echo "Starting existing aic-qdrant container..."
-    docker start aic-qdrant >/dev/null
-  fi
-
-  for _ in $(seq 1 20); do
-    if [ "$(http_status "http://127.0.0.1:6333/collections")" = "200" ] && is_port_open 127.0.0.1 6334; then
-      echo "Qdrant is available on 6333 and 6334."
-      return 0
-    fi
-    sleep 1
-  done
-
-  error "Qdrant did not become available on 6333 and 6334. Start your local Qdrant container and retry."
-  exit 1
-}
-
 ensure_frontend_dependencies() {
   echo "Checking frontend dependencies..."
   require_command npm
@@ -141,7 +97,6 @@ fi
 require_command python
 require_command npm
 require_command curl
-require_command nc
 
 FUNNEL_URL="$(normalize_url "$1")"
 if [ "$FUNNEL_URL" = "INVALID_SCHEME" ] || [ -z "$FUNNEL_URL" ]; then
@@ -156,7 +111,6 @@ else
   echo "Warning: Team Room health returned HTTP $HEALTH_STATUS. Local retrieval can still start, but shared Team Room may be unavailable." >&2
 fi
 
-check_qdrant
 ensure_frontend_dependencies
 set_frontend_team_room_url "$FUNNEL_URL"
 echo "Updated FrontEnd/.env.local with VITE_TEAM_ROOM_BACKEND_URL."
@@ -168,14 +122,12 @@ AIC2026 CLIENT READY
 Frontend:
 http://localhost:5173
 
-Local Retrieval:
-http://127.0.0.1:8000
-
-Local Qdrant:
-http://127.0.0.1:6333
-
 Shared Team Room:
+ONLINE
 $FUNNEL_URL
+
+Local Retrieval:
+Managed independently by the local retrieval stack.
 ========================================
 READY
 

@@ -110,66 +110,6 @@ function Wait-ForStatus {
     return $false
 }
 
-function Test-TcpPort {
-    param(
-        [string]$HostName,
-        [int]$Port
-    )
-
-    $client = $null
-    try {
-        $client = New-Object System.Net.Sockets.TcpClient
-        $async = $client.BeginConnect($HostName, $Port, $null, $null)
-        if (-not $async.AsyncWaitHandle.WaitOne(2000, $false)) {
-            return $false
-        }
-        $client.EndConnect($async)
-        return $true
-    } catch {
-        return $false
-    } finally {
-        if ($client) {
-            $client.Close()
-        }
-    }
-}
-
-function Check-Qdrant {
-    Write-Host "Checking local Qdrant..."
-    if ((Get-HttpStatus "http://127.0.0.1:6333/collections") -eq 200 -and (Test-TcpPort "127.0.0.1" 6334)) {
-        Write-Host "Qdrant is available on 6333 and 6334."
-        return
-    }
-
-    if (-not (Test-CommandAvailable docker)) {
-        Write-Fail "Qdrant is not responding and docker was not found. Start your local Qdrant container and retry."
-        exit 1
-    }
-
-    $container = docker ps -a --filter "name=^/aic-qdrant$" --format "{{.Names}}" 2>$null
-    if ($container -ne "aic-qdrant") {
-        Write-Fail "Qdrant is not available. Start your local Qdrant container and retry."
-        exit 1
-    }
-
-    $running = docker inspect -f "{{.State.Running}}" aic-qdrant 2>$null
-    if ($running -ne "true") {
-        Write-Host "Starting existing aic-qdrant container..."
-        docker start aic-qdrant | Out-Null
-    }
-
-    for ($i = 0; $i -lt 20; $i++) {
-        if ((Get-HttpStatus "http://127.0.0.1:6333/collections") -eq 200 -and (Test-TcpPort "127.0.0.1" 6334)) {
-            Write-Host "Qdrant is available on 6333 and 6334."
-            return
-        }
-        Start-Sleep -Seconds 1
-    }
-
-    Write-Fail "Qdrant did not become available on 6333 and 6334. Start your local Qdrant container and retry."
-    exit 1
-}
-
 function Ensure-FrontendDependencies {
     Write-Host "Checking frontend dependencies..."
     Require-Command npm
@@ -283,12 +223,9 @@ function Cleanup {
 try {
     Require-Command python
     Require-Command npm
-    Require-Command docker
     Require-Command tailscale
 
     Set-Location $RepoRoot
-    Check-Qdrant
-    Ensure-FrontendDependencies
 
     Write-Host "Checking Tailscale..."
     tailscale status | Out-Null
@@ -368,17 +305,13 @@ try {
     Set-FrontendTeamRoomUrl $FunnelUrl
     Write-Host "Updated FrontEnd/.env.local with VITE_TEAM_ROOM_BACKEND_URL."
 
+    Ensure-FrontendDependencies
+
     Write-Host "========================================"
     Write-Host "AIC2026 HOST READY"
     Write-Host ""
     Write-Host "Frontend:"
     Write-Host "http://localhost:5173"
-    Write-Host ""
-    Write-Host "Local Retrieval:"
-    Write-Host "http://127.0.0.1:8000"
-    Write-Host ""
-    Write-Host "Local Qdrant:"
-    Write-Host "http://127.0.0.1:6333"
     Write-Host ""
     Write-Host "Team Room:"
     Write-Host "http://127.0.0.1:8100"
