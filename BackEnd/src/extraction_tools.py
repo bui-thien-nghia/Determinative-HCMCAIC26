@@ -1,16 +1,20 @@
 import csv
 import json
 import cv2
-import numpy as np
-import pandas as pd
 import subprocess
 import re
+import os
+import numpy as np
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics.pairwise import cosine_similarity
 from models import *
 from tqdm import tqdm
+from PIL import Image
+
+NUM_CORES = os.cpu_count() or 1
 
 class KeyframeAndFeatureExtractor:
     def __init__(
@@ -31,18 +35,19 @@ class KeyframeAndFeatureExtractor:
         self,
         vid_path: str,
         shot_confidence_score: float = 0.1,
-        min_keyframe_distance: float = 2
+        min_keyframe_distance: float = 2,
+        num_workers: int = 1
     ):
         select_str = f"select='isnan(prev_selected_t)+gt(scene,{shot_confidence_score})*gte(t-prev_selected_t,{min_keyframe_distance})',showinfo"
         cmd = [
                 "ffmpeg",
                 "-hide_banner",
-                "-threads", "4",
+                "-threads", str(NUM_CORES // (num_workers * 2)),
                 "-i", vid_path,
                 "-v", "info",
                 "-skip_frame", "nokey",
                 "-vf", select_str,
-                "-vsync", "vfr",
+                "-fps_mode", "vfr",
                 "-f", "rawvideo",
                 "-pix_fmt", "rgb24",
                 "-",
@@ -67,8 +72,8 @@ class KeyframeAndFeatureExtractor:
         maps = [{
             "vid_path": vid_path,
             "frame_id": f"{(frame_id + 1):03d}",
-            "frame_order": frame_order,
-            "time_order": time_order,
+            "frame_order": frame_order + int(0.5 * fps),
+            "time_order": time_order + 0.5,
             "fps": fps,
         } for frame_id, (frame_order, time_order) in enumerate(zip(frame_orders, time_orders))]
 
@@ -113,11 +118,13 @@ class KeyframeAndFeatureExtractor:
         shot_confidence_score: float = 0.1,
         min_keyframe_distance: float = 2,
         feature_extraction_batch_size: int = 32,
+        num_workers: int = 1
     ):
         imgs, maps = self.extract_keyframes_ffmpeg(
             vid_path, 
             shot_confidence_score=shot_confidence_score,
-            min_keyframe_distance=min_keyframe_distance
+            min_keyframe_distance=min_keyframe_distance,
+            num_workers=num_workers
         )
         
         feats = self.feature_extraction_model.run(imgs, batch_size=feature_extraction_batch_size)
@@ -207,7 +214,7 @@ class KeyframeAndFeatureExtractor:
         shot_confidence_score: float = 0.1,
         min_keyframe_distance: float = 2,
         clustering_similarity_threshold: float = 0.98,
-        max_workers: int = 1
+        num_workers: int = 1
     ):
         self.img_dir.mkdir(parents=True, exist_ok=True)
         self.map_dir.mkdir(parents=True, exist_ok=True)
@@ -219,6 +226,7 @@ class KeyframeAndFeatureExtractor:
                 shot_confidence_score=shot_confidence_score,
                 min_keyframe_distance=min_keyframe_distance,
                 feature_extraction_batch_size=feature_extraction_batch_size,
+                num_workers=num_workers
             )
             unique_imgs, unique_maps, unique_feats = self.filter_with_clustering(
                 imgs, maps, feats,
@@ -226,7 +234,7 @@ class KeyframeAndFeatureExtractor:
             )
             self.save_images_and_features(unique_imgs, unique_maps, unique_feats)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for _ in tqdm(
                 executor.map(process_single_video, vid_paths),
                 total=len(vid_paths),
@@ -260,10 +268,12 @@ class TranscriptAndFeatureProcessor:
             language: str = "",
             beam_size: int = 5,
             vad_filter: bool = True,
+            max_sentence_duration: float = 12
     ):
         tran_segments: list[dict] = []
         selected = []
         s, e = 0.0, 0.0
+
         tran_words = self.transcription_model.run(
             vid_path,
             batch_size=batch_size,
@@ -272,14 +282,35 @@ class TranscriptAndFeatureProcessor:
             vad_filter=vad_filter,
             word_timestamp=True
         )
+
+        # for word in tran_words:
+        #     e = word['end_time']
+        #     selected.append(word['text'])
+        #     if word['text'] and word['text'][-1] in [',', '.', '?', '!', ';']:
+        #         sentence = ' '.join(selected)
+        #         tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
+        #         selected = []
+        #         s = e
+        # if selected:
+        #     sentence = ' '.join(selected)
+        #     tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
+
+
         for word in tran_words:
+            if not selected:
+                s = word['start_time']
+
             e = word['end_time']
             selected.append(word['text'])
-            if word['text'] and word['text'][-1] in [',', '.', '?', '!', ';']:
+
+            is_punctuation = word['text'][-1] in [',', '.', '?', '!', ';']
+            is_too_long = (e - s) >= max_sentence_duration
+
+            if is_punctuation or is_too_long:
                 sentence = ' '.join(selected)
                 tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
                 selected = []
-                s = e
+
         if selected:
             sentence = ' '.join(selected)
             tran_segments.append({'start_time': s, 'end_time': e, 'text': sentence})
@@ -291,7 +322,7 @@ class TranscriptAndFeatureProcessor:
         self,
         tran_segments: list[dict],
         img_map_path: str,
-        max_time_distance: float = 5.0
+        transcript_time_range: float = 24
     ):
         tran_map: dict = {}
         vid_id = Path(img_map_path).stem
@@ -304,8 +335,8 @@ class TranscriptAndFeatureProcessor:
                     frame_id = row["frame_id"]
                 except Exception:
                     frame_id = f"{(idx + 1):03d}"
-                lower_bound = time_order - max_time_distance
-                upper_bound = time_order + max_time_distance
+                lower_bound = time_order - transcript_time_range / 2
+                upper_bound = time_order + transcript_time_range / 2
 
                 selected = [
                     sentence['text'] for sentence in tran_segments
@@ -361,9 +392,10 @@ class TranscriptAndFeatureProcessor:
         transcription_beam_size: int = 5,
         transcription_language: str = "",
         transcription_vad_filter: bool = True,
-        alignment_max_time_distance: float = 5.0,
         feature_extraction_batch_size: int = 32,
-        max_workers: int = 1
+        max_sentence_duration: float = 12.0,
+        alignment_transcript_time_range: float = 24.0,
+        num_workers: int = 1
     ):
         self.tran_dir.mkdir(parents=True, exist_ok=True)
         self.feat_dir_dense.mkdir(parents=True, exist_ok=True)
@@ -376,12 +408,13 @@ class TranscriptAndFeatureProcessor:
                 batch_size=transcription_batch_size,
                 language=transcription_language,
                 beam_size=transcription_beam_size,
-                vad_filter=transcription_vad_filter
+                vad_filter=transcription_vad_filter,
+                max_sentence_duration=max_sentence_duration
             )
             tran_map = self.align_transcript_keyframe(
                 tran_segments,
                 img_map_path=map,
-                max_time_distance=alignment_max_time_distance
+                transcript_time_range=alignment_transcript_time_range
             )
             feats = self.extract_transcription_features(
                 list(tran_map.values()),
@@ -392,10 +425,13 @@ class TranscriptAndFeatureProcessor:
             )
             for feat in feats:
                 for row in feat:
-                    if np.nan in row: raise RuntimeError("Got NaN vector")
+                    if isinstance(row, np.ndarray) and np.isnan(row).any():
+                        raise RuntimeError("Got NaN vector")
+                    elif isinstance(row, dict) and any(np.isnan(v) for v in row.values()):
+                        raise RuntimeError("Got NaN vector in sparse dictionary")
             self.save_transcripts_and_features(tran_map, feats)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for _ in tqdm(
                 executor.map(process_single_video, vid_paths, map_paths),
                 total=len(vid_paths),
@@ -409,7 +445,7 @@ class FeaturePackager:
         self.save_dir = Path(save_dir)
 
 
-    def compact_and_save_features(self, max_workers: int = 1):
+    def compact_and_save_features(self, num_workers: int = 1):
         feats_siglip2_dense_paths = [str(path) for path in self.feats_dir.rglob("siglip2_dense/**/*.npy")]
         feats_beit3_dense_paths = [str(path) for path in self.feats_dir.rglob("beit3_dense/**/*.npy")]
         feats_bgem3_dense_paths = [str(path) for path in self.feats_dir.rglob("bgem3_dense/**/*.npy")]
@@ -446,7 +482,7 @@ class FeaturePackager:
                 feat_bgem3_sparse_weights=np.load(feat_bgem3_sparse_weights_path),
             )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for _ in tqdm(
                 executor.map(
                     load_and_save_single_npz,
@@ -508,7 +544,7 @@ class InfoPackager:
         scope: str,
         info_dir: str | Path,
         keys_and_column_names: list[tuple[str, str]] = [],
-        max_workers: int = 1
+        num_workers: int = 1
     ):
         if not len(keys_and_column_names): return
         if scope not in ["video", "frame"]:
@@ -528,7 +564,7 @@ class InfoPackager:
                 vid_id = path.stem
                 for infos in self.maps[vid_id].values(): infos.update(info_dict)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             for _ in tqdm(
                 executor.map(
                     add_single_file,

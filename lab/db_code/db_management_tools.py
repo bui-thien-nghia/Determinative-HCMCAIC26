@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from scipy.sparse import csr_matrix
 from pathlib import Path
 from qdrant_client import QdrantClient, models
@@ -388,6 +387,7 @@ class QueryManager:
             if len(using_vectors) == 1:
                 prefetch = None
                 query = list(query.values())[0]
+                using_vectors = using_vectors[0]
             else:
                 prefetch = self.create_prefetch(**query, search_limit=search_limit)
                 query = models.FusionQuery(fusion=models.Fusion.RRF) # defaults to RRF
@@ -429,6 +429,7 @@ class QueryManager:
                     if len(using_vectors) == 1:
                         prefetch = None
                         query = list(query.values())[0]
+                        using_vectors = using_vectors[0]
                     else:
                         prefetch = self.create_prefetch(**query, search_limit=search_limit)
                         query = models.FusionQuery(fusion=models.Fusion.RRF) # defaults to RRF
@@ -461,7 +462,8 @@ class QueryManager:
         aggregation_neighbor_limit: int = 10,
         aggregation_weight: float = 0.5,
         temporal_evaluation_weights: list[float] = [0.6, 0.2, 0.2],
-        eps: float = 1e-8
+        eps: float = 1e-8,
+        filter: list[models.Condition] = []
     ):
         # Safeguard
         aggregation_neighbor_limit = np.clip(aggregation_neighbor_limit, 0, search_limit)
@@ -480,8 +482,9 @@ class QueryManager:
             prefetch=query_prefetch,
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             search_limit=search_limit,
-            return_vectors=["siglip2_dense", "beit3_dense", "bgem3_dense", "bgem3_sparse"],
-            return_payloads=True
+            return_vectors=["siglip2_dense", "bgem3_dense", "bgem3_sparse"],
+            return_payloads=True,
+            filter=filter
         )
 
         # Batch ANN search
@@ -498,7 +501,7 @@ class QueryManager:
                 filter=models.Filter(must=self.create_filters(vid_id=vid_id)),
                 params=self.search_params,
                 limit=aggregation_neighbor_limit+1,
-                with_vector=["siglip2_dense", "beit3_dense", "bgem3_dense", "bgem3_sparse"],
+                with_vector=["siglip2_dense", "bgem3_dense", "bgem3_sparse"],
                 with_payload=["time_order"],
             ))
         points_neighbors = self.batch_search(collection_name, queries=batch_requests)
@@ -514,7 +517,7 @@ class QueryManager:
             total_temporal_score = 0
             for neighbor in neighbors:
                 # Visual relevance score
-                total_visual_score += self.cosine_similarity(point.vector["beit3_dense"], neighbor.vector["beit3_dense"])
+                total_visual_score += self.cosine_similarity(point.vector["siglip2_dense"], neighbor.vector["siglip2_dense"])
 
                 # Temporal relevance score
                 neighbor_time_order = float(neighbor.payload["time_order"])

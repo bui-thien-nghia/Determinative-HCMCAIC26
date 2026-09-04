@@ -161,7 +161,8 @@ class FasterWhisperModel(ExtractionModel):
         language: str = "",
         beam_size: int = 5,
         vad_filter: bool = True,
-        word_timestamp: bool = False
+        word_timestamp: bool = False,
+        condition_on_previous_text: bool = True,
     ):
         if not self.model:
             print(f"[ERROR] Cannot run inference on {self.name}: the model is missing")
@@ -175,6 +176,7 @@ class FasterWhisperModel(ExtractionModel):
             vad_filter=vad_filter,
             batch_size=batch_size,
             word_timestamps=word_timestamp,
+            condition_on_previous_text=condition_on_previous_text,
         )
 
         for segment in segments:
