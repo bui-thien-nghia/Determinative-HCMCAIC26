@@ -1,4 +1,4 @@
-# AIC2026 Team Room - Quick Setup
+# AIC2026 Team Room - Competition Startup
 
 - Everyone runs Search/Qdrant locally.
 - Only Team Room is shared.
@@ -12,37 +12,50 @@
 | 6333 | Local Qdrant |
 | 8100 | Host Team Room only |
 
-# 1. HOST - macOS
+# Host
 
-### A. Go to repo
-
-Replace the path if your repo is elsewhere.
+macOS:
 
 ```sh
-cd "/Users/kentnguyen/Documents/AIC2026/Team Repository"
+./scripts/start_host.sh
 ```
 
-### B. Activate venv
+Windows PowerShell:
+
+```powershell
+.\scripts\start_host.ps1
+```
+
+# Teammate
+
+macOS:
 
 ```sh
-source "/Users/kentnguyen/Documents/AIC2026/TEST/.venv/bin/activate"
+./scripts/start_client.sh https://xxxxx.ts.net
 ```
 
-### C. Pull latest code
+Windows PowerShell:
 
-```sh
-git checkout main
-git pull origin main
+```powershell
+.\scripts\start_client.ps1 https://xxxxx.ts.net
 ```
 
-### D. Migrate
+# Competition Flow
 
-```sh
-PYTHONPATH="$PWD:$PWD/BackEnd/src" \
-python BackEnd/API/manage.py migrate
-```
+1. Open http://localhost:5173.
+2. One user clicks `CREATE NEW ROOM`.
+3. Send the `AIC-XXXXXXX` room code.
+4. Others enter name + room code and click `JOIN`.
 
-### E. Terminal 1 - Normal App
+# What The Scripts Do
+
+The host script checks Qdrant, frontend dependencies, Tailscale login, Team Room health, Team Room isolation, Django allowed hosts, Funnel public health, and public `/api/search/` isolation before printing the teammate URL.
+
+Both host and teammate scripts preserve unrelated values in `FrontEnd/.env.local` and set `VITE_TEAM_ROOM_BACKEND_URL`.
+
+# Manual Fallback
+
+Run the normal app:
 
 ```sh
 cd FrontEnd
@@ -50,191 +63,25 @@ npm install
 npm run start:all
 ```
 
-### F. Terminal 2 - Team Room Backend
+Run Team Room only:
 
 ```sh
-./scripts/start_team_room.sh
+./scripts/start_team_room.sh your-host.xxxxx.ts.net
 ```
 
-### G. Check Team Room
+Check isolation before Funnel:
 
 ```sh
 curl http://127.0.0.1:8100/api/team-room/health/
 curl -i http://127.0.0.1:8100/api/search/
 ```
 
-Expected health: `{"status":"ok","service":"team-room"}`
-
-Expected `/api/search/`: `404`. If `/api/search/` is not `404`, do not start Funnel.
-
-### H. Terminal 3 - Funnel
+Only if health is `200` and `/api/search/` is `404`:
 
 ```sh
-tailscale funnel --help
 tailscale funnel --bg 8100
 tailscale funnel status
 ```
-
-Copy the HTTPS URL shown by Tailscale. Example only: `https://your-host.xxxxx.ts.net`
-
-### I. Set Funnel URL
-
-Create `FrontEnd/.env.local`:
-
-```sh
-VITE_TEAM_ROOM_BACKEND_URL=https://your-host.xxxxx.ts.net
-```
-
-Restart Terminal 1 if this file changes.
-
-Open: http://localhost:5173
-
-# 2. HOST - Windows
-
-Use PowerShell and your actual repo/venv paths.
-
-```powershell
-cd "C:\path\to\Team Repository"
-.\.venv\Scripts\Activate.ps1
-git checkout main
-git pull origin main
-python BackEnd\API\manage.py migrate
-```
-
-Terminal 1 - Normal App:
-
-```powershell
-cd FrontEnd
-npm install
-npm run start:all
-```
-
-Terminal 2 - Team Room Backend:
-
-```powershell
-.\scripts\start_team_room.ps1
-```
-
-Check Team Room:
-
-```powershell
-curl.exe http://127.0.0.1:8100/api/team-room/health/
-curl.exe -i http://127.0.0.1:8100/api/search/
-```
-
-Expected `/api/search/`: `404`. If `/api/search/` is not `404`, do not start Funnel.
-
-Terminal 3 - Funnel:
-
-```powershell
-tailscale funnel --help
-tailscale funnel --bg 8100
-tailscale funnel status
-```
-
-Create `FrontEnd\.env.local`:
-
-```text
-VITE_TEAM_ROOM_BACKEND_URL=https://your-host.xxxxx.ts.net
-```
-
-Restart Terminal 1 if this file changes.
-
-Open: http://localhost:5173
-
-# 3. TEAMMATE - macOS
-
-Teammates do not need Tailscale. Start your normal local Qdrant first.
-
-```sh
-cd "/path/to/Team Repository"
-source "/path/to/venv/bin/activate"
-git checkout main
-git pull origin main
-```
-
-Create `FrontEnd/.env.local`:
-
-```sh
-VITE_TEAM_ROOM_BACKEND_URL=https://<FUNNEL_URL_FROM_HOST>
-```
-
-```sh
-cd FrontEnd
-npm install
-npm run start:all
-```
-
-Open: http://localhost:5173
-
-# 4. TEAMMATE - Windows
-
-Teammates do not need Tailscale. Start your normal local Qdrant first.
-
-```powershell
-cd "C:\path\to\Team Repository"
-.\.venv\Scripts\Activate.ps1
-git checkout main
-git pull origin main
-```
-
-Create `FrontEnd\.env.local`:
-
-```text
-VITE_TEAM_ROOM_BACKEND_URL=https://<FUNNEL_URL_FROM_HOST>
-```
-
-```powershell
-cd FrontEnd
-npm install
-npm run start:all
-```
-
-Open: http://localhost:5173
-
-# 5. Create / Join Room
-
-1. Everyone opens http://localhost:5173.
-2. Everyone must use the same Funnel URL in `.env.local`.
-3. Host/member clicks `CREATE NEW ROOM`.
-4. Copy `AIC-XXXXXXX`.
-5. Send the room code to teammates.
-6. Teammates enter name + room code, then click `JOIN`.
-7. Confirm member count is correct.
-
-Only one browser tab is needed.
-
-# 6. Quick Test
-
-- [ ] Host health endpoint returns `200`.
-- [ ] Public Funnel health works.
-- [ ] Public Funnel `/api/search/` returns `404`.
-- [ ] Two teammates can join the same room.
-- [ ] User A edits Query 3 -> User B sees it.
-- [ ] User B edits Query 20 -> User A sees it.
-- [ ] Each machine keeps its own Collection.
-- [ ] Each machine keeps its own Top K.
-- [ ] Local Search still works if Team Room goes offline.
-
-# 7. Stop After Competition
-
-```sh
-tailscale funnel status
-tailscale funnel reset
-```
-
-Stop Team Room Django `:8100` with Ctrl+C.
-
-# Troubleshooting
-
-| Problem | Check |
-| --- | --- |
-| Create Room fails | Check `:8100` health and `tailscale funnel status`. |
-| Team Room offline | Check `.env.local`, Funnel URL, then restart Vite. |
-| Changed `.env.local` but nothing changed | Restart `npm run start:all`. |
-| Search does not work | Check local Django `:8000` and Qdrant. |
-| Funnel public `/api/search/` works | Stop Funnel immediately; Team Room isolation is wrong. |
-| Port already in use | Stop the old process before starting another server. |
 
 > IMPORTANT:
 > - Never Funnel port `8000`.
