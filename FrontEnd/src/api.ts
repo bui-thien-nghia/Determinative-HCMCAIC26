@@ -92,10 +92,8 @@ type DatasetOption = {
 const ACTIVE_COLLECTION = 'aic2026_v2'
 const TEAM_ROOM_API_PREFIX = '/__team_room_api__'
 
-export function getSearchModalityRequestFields(_modality: SearchModality): Record<string, never> {
-  // BACKEND_INTEGRATION_SEARCH_MODALITY: when the backend supports search modality,
-  // return the agreed request field(s) here. Until then, keep requests unchanged.
-  return {}
+export function getSearchModalityRequestFields(modality: SearchModality): { modality: SearchModality } {
+  return { modality }
 }
 
 async function readTeamRoomJson<T>(response: Response): Promise<T> {

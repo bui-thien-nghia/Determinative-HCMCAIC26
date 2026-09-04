@@ -63,6 +63,7 @@ export default function RecheckPanel() {
     setPackageQueryType,
     addPackageQueryCandidate,
     addPackageQueryCandidates,
+    replacePackageQueryCandidates,
     updatePackageQueryCandidate,
     removePackageQueryCandidate,
     reorderPackageQueryCandidates,
@@ -306,6 +307,7 @@ export default function RecheckPanel() {
         onUpdateCandidate={updatePackageQueryCandidate}
         onRemoveCandidate={removePackageQueryCandidate}
         onReorderCandidate={reorderPackageQueryCandidates}
+        onReplaceCandidates={replacePackageQueryCandidates}
         onSetExpectedEventCount={setPackageQueryExpectedEventCount}
         onNotify={addToast}
       />

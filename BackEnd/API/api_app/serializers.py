@@ -18,6 +18,11 @@ class SearchRequest(serializers.Serializer):
         choices = ['AUTO', 'VI', 'EN'],
         default = 'AUTO'
     )
+    modality = serializers.ChoiceField(
+        choices = ['hybrid', 'visual', 'textual'],
+        default = 'hybrid',
+        required = False
+    )
     filters = serializers.DictField(required = False)
 
 

@@ -11,6 +11,21 @@ from .serializers import SearchRequest
 query_manager = None
 advanced_query_service = None
 
+MODALITY_VECTOR_MAP = {
+    "hybrid": [
+        "siglip2_dense",
+        "bgem3_dense",
+        "bgem3_sparse",
+    ],
+    "visual": [
+        "siglip2_dense",
+    ],
+    "textual": [
+        "bgem3_dense",
+        "bgem3_sparse",
+    ],
+}
+
 
 def get_query_manager():
     global query_manager
@@ -74,6 +89,8 @@ def Search(request):
         collection = validated_data.get("collection")
         top_k = validated_data.get("top_k")
         filters = validated_data.get("filters")
+        modality = validated_data.get("modality")
+        using_vectors = MODALITY_VECTOR_MAP[modality]
 
         if not query:
             return Response({'error': 'Enter a query or use /api/filter/ for filter-only search.'}, status=400)
@@ -83,7 +100,8 @@ def Search(request):
                 collection_name=collection,
                 query=query,
                 search_limit=top_k,
-                filters=filters
+                filters=filters,
+                using_vectors=using_vectors
             )
         except ValueError as e:
             return Response({'error': str(e)}, status=400)

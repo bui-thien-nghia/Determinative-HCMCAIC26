@@ -103,13 +103,23 @@ class AdvancedQueryService:
             )
         )
 
-    def search(self, collection_name: str, query: str, search_limit: int = 100, filters: dict | None = None):
-        return self.db.search(
-            collection_name=collection_name,
-            query=query,
-            search_limit=search_limit,
-            filter=self.create_search_filters(filters)
-        )
+    def search(
+        self,
+        collection_name: str,
+        query: str,
+        search_limit: int = 100,
+        filters: dict | None = None,
+        using_vectors=None
+    ):
+        search_kwargs = {
+            "collection_name": collection_name,
+            "query": query,
+            "search_limit": search_limit,
+            "filter": self.create_search_filters(filters),
+        }
+        if using_vectors is not None:
+            search_kwargs["using_vectors"] = using_vectors
+        return self.db.search(**search_kwargs)
 
     def aggregated_search(self, collection_name: str, query: str, search_limit: int = 100, filters: dict | None = None):
         return self.db.aggregated_search(

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ClipboardPaste, Plus } from 'lucide-react'
+import { ClipboardPaste, Plus, Trash2 } from 'lucide-react'
 import type { SearchResult } from '../../store'
 import {
   MAX_TRAKE_EVENT_COUNT,
@@ -28,6 +28,7 @@ type ActiveQueryEditorProps = {
   onRemoveCandidate: (queryId: string, candidateId: string) => void
   onReorderCandidate: (queryId: string, fromIdx: number, toIdx: number) => void
   onAddCandidates: (queryId: string, candidates: QueryCandidate[]) => number
+  onReplaceCandidates: (queryId: string, candidates: QueryCandidate[]) => void
   onSetExpectedEventCount: (queryId: string, expectedEventCount: number | undefined) => void
   onNotify: (message: string, type?: 'success' | 'error' | 'info') => void
 }
@@ -54,6 +55,7 @@ export default function ActiveQueryEditor({
   onRemoveCandidate,
   onReorderCandidate,
   onAddCandidates,
+  onReplaceCandidates,
   onSetExpectedEventCount,
   onNotify,
 }: ActiveQueryEditorProps) {
@@ -125,6 +127,11 @@ export default function ActiveQueryEditor({
     }
   }
 
+  const handleDeleteAll = () => {
+    if (candidateCount === 0) return
+    onReplaceCandidates(query.id, [])
+  }
+
   const handleExpectedEventCountChange = (value: string) => {
     if (!value.trim()) {
       onSetExpectedEventCount(query.id, undefined)
@@ -182,6 +189,14 @@ export default function ActiveQueryEditor({
           >
             <ClipboardPaste size={12} />
             Paste Answers
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteAll}
+            className="flex shrink-0 items-center justify-center gap-1.5 rounded border border-red-900/40 bg-red-950/20 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-red-300 transition-colors hover:bg-red-900/40 hover:text-red-100"
+          >
+            <Trash2 size={12} />
+            Delete All
           </button>
         </div>
         {query.type === 'TRAKE' && (
