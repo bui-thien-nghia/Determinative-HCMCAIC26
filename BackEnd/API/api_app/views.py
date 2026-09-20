@@ -34,8 +34,8 @@ def get_query_manager():
         from BackEnd.src.models import BGEM3Model, SigLIP2Model
 
         query_manager = QueryManager(
-            SigLIP2Model(name="google/siglip2-giant-opt-patch16-384", device="cpu"),
-            BGEM3Model(name="BAAI/bge-m3", device="cpu")
+            SigLIP2Model(name="google/siglip2-giant-opt-patch16-384", device="cuda"),
+            BGEM3Model(name="BAAI/bge-m3", device="cuda")
         )
     return query_manager
 
